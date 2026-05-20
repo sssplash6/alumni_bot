@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 # ── Keyboard helpers ──────────────────────────────────────────────────────────
 
-def _checkbox_kb(options: list[str], selected: set, prefix: str) -> InlineKeyboardMarkup:
+def _checkbox_kb(options: list[str], selected: set[str], prefix: str) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(
             f"{'✅' if opt in selected else '☑️'} {opt}",
