@@ -60,3 +60,136 @@ async def is_applications_open() -> bool:
         ) as cur:
             row = await cur.fetchone()
     return row is not None and row[0] == "1"
+
+
+async def set_applications_open(open_: bool) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('applications_open', ?)",
+            ("1" if open_ else "0",),
+        )
+        await db.commit()
+
+
+async def save_mentor(
+    chat_id: int,
+    full_name: str,
+    spheres: list[str],
+    exp_level: str,
+    devote_time: str,
+    mentee_exp_prefs: list[str],
+    extra: str | None,
+) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """INSERT OR REPLACE INTO mentors
+               (chat_id, full_name, spheres, exp_level, devote_time, mentee_exp_prefs, extra, registered_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                chat_id, full_name, json.dumps(spheres), exp_level,
+                devote_time, json.dumps(mentee_exp_prefs), extra,
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        await db.commit()
+
+
+async def save_mentee(
+    chat_id: int,
+    full_name: str,
+    spheres: list[str],
+    exp_level: str,
+    mentor_exp_prefs: list[str],
+    extra: str | None,
+    devote_time: str,
+    consent: bool,
+) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """INSERT OR REPLACE INTO mentees
+               (chat_id, full_name, spheres, exp_level, mentor_exp_prefs, extra, devote_time, consent, registered_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                chat_id, full_name, json.dumps(spheres), exp_level,
+                json.dumps(mentor_exp_prefs), extra, devote_time,
+                int(consent), datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        await db.commit()
+
+
+async def is_registered_mentor(chat_id: int) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT 1 FROM mentors WHERE chat_id = ?", (chat_id,)) as cur:
+            return await cur.fetchone() is not None
+
+
+async def is_registered_mentee(chat_id: int) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT 1 FROM mentees WHERE chat_id = ?", (chat_id,)) as cur:
+            return await cur.fetchone() is not None
+
+
+def _parse_mentor_row(row: dict) -> dict:
+    row["spheres"] = json.loads(row["spheres"])
+    row["mentee_exp_prefs"] = json.loads(row["mentee_exp_prefs"])
+    return row
+
+
+def _parse_mentee_row(row: dict) -> dict:
+    row["spheres"] = json.loads(row["spheres"])
+    row["mentor_exp_prefs"] = json.loads(row["mentor_exp_prefs"])
+    return row
+
+
+async def get_mentor_by_chat_id(chat_id: int) -> dict | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM mentors WHERE chat_id = ?", (chat_id,)) as cur:
+            row = await cur.fetchone()
+    return _parse_mentor_row(dict(row)) if row else None
+
+
+async def get_mentee_by_chat_id(chat_id: int) -> dict | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM mentees WHERE chat_id = ?", (chat_id,)) as cur:
+            row = await cur.fetchone()
+    return _parse_mentee_row(dict(row)) if row else None
+
+
+async def get_all_mentors() -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM mentors") as cur:
+            rows = await cur.fetchall()
+    return [_parse_mentor_row(dict(r)) for r in rows]
+
+
+async def get_all_mentees() -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM mentees") as cur:
+            rows = await cur.fetchall()
+    return [_parse_mentee_row(dict(r)) for r in rows]
+
+
+async def save_matches(matches: list[tuple[int, int, float]]) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.executemany(
+            "INSERT INTO matches (mentor_chat_id, mentee_chat_id, score, matched_at) VALUES (?, ?, ?, ?)",
+            [(m_id, t_id, score, now) for m_id, t_id, score in matches],
+        )
+        await db.commit()
+
+
+async def get_registration_counts() -> tuple[int, int, int]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT COUNT(*) FROM mentors") as cur:
+            (mentors,) = await cur.fetchone()
+        async with db.execute("SELECT COUNT(*) FROM mentees") as cur:
+            (mentees,) = await cur.fetchone()
+        async with db.execute("SELECT COUNT(*) FROM matches") as cur:
+            (matches,) = await cur.fetchone()
+    return mentors, mentees, matches
