@@ -43,6 +43,7 @@ REGISTRATION_SAVED = (
     "You're registered! We'll notify you when matches are announced. Good luck!"
 )
 CONSENT_REQUIRED = "You must agree to the terms to complete registration."
+SAVE_ERROR = "Something went wrong saving your registration. Please try again later."
 
 # ── Mentor form ───────────────────────────────────────────────────────────────
 

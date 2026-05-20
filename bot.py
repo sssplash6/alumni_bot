@@ -104,7 +104,11 @@ async def mentor_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 
 async def mentor_got_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data["full_name"] = update.message.text.strip()
+    name = update.message.text.strip()
+    if not name:
+        await update.message.reply_text(msg.WELCOME_MENTOR)
+        return MENTOR_NAME
+    context.user_data["full_name"] = name
     context.user_data["spheres"] = set()
     await update.message.reply_text(
         msg.ASK_SPHERE,
@@ -211,15 +215,20 @@ async def mentor_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.edit_message_text(msg.REGISTRATION_CANCELLED)
         return ConversationHandler.END
     data = context.user_data
-    await db.save_mentor(
-        chat_id=update.effective_chat.id,
-        full_name=data["full_name"],
-        spheres=list(data["spheres"]),
-        exp_level=data["exp_level"],
-        devote_time=data["devote_time"],
-        mentee_exp_prefs=list(data["mentee_exp_prefs"]),
-        extra=data.get("extra"),
-    )
+    try:
+        await db.save_mentor(
+            chat_id=update.effective_chat.id,
+            full_name=data["full_name"],
+            spheres=list(data["spheres"]),
+            exp_level=data["exp_level"],
+            devote_time=data["devote_time"],
+            mentee_exp_prefs=list(data["mentee_exp_prefs"]),
+            extra=data.get("extra"),
+        )
+    except Exception:
+        logger.exception("Failed to save mentor %d", update.effective_chat.id)
+        await query.edit_message_text(msg.SAVE_ERROR)
+        return ConversationHandler.END
     await query.edit_message_text(msg.REGISTRATION_SAVED)
     return ConversationHandler.END
 
