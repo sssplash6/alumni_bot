@@ -80,3 +80,160 @@ def _consent_kb(agreed: bool) -> InlineKeyboardMarkup:
         )],
         [InlineKeyboardButton("Continue →", callback_data="consent:done")],
     ])
+
+
+# ── /start ────────────────────────────────────────────────────────────────────
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(msg.START_TEXT)
+
+
+# ── Mentor flow ───────────────────────────────────────────────────────────────
+
+async def mentor_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    chat_id = update.effective_chat.id
+    if not await db.is_applications_open():
+        await update.message.reply_text(msg.APPS_CLOSED)
+        return ConversationHandler.END
+    if await db.is_registered_mentor(chat_id):
+        await update.message.reply_text(msg.ALREADY_REGISTERED)
+        return ConversationHandler.END
+    context.user_data.clear()
+    await update.message.reply_text(msg.WELCOME_MENTOR)
+    return MENTOR_NAME
+
+
+async def mentor_got_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["full_name"] = update.message.text.strip()
+    context.user_data["spheres"] = set()
+    await update.message.reply_text(
+        msg.ASK_SPHERE,
+        reply_markup=_checkbox_kb(msg.SPHERES, set(), "msphere"),
+    )
+    return MENTOR_SPHERE
+
+
+async def mentor_sphere_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    sphere = query.data.split(":", 2)[2]
+    selected: set[str] = context.user_data.setdefault("spheres", set())
+    selected.symmetric_difference_update({sphere})
+    await query.edit_message_reply_markup(
+        reply_markup=_checkbox_kb(msg.SPHERES, selected, "msphere")
+    )
+    return MENTOR_SPHERE
+
+
+async def mentor_sphere_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    if not context.user_data.get("spheres"):
+        await query.answer("Please select at least one sphere.", show_alert=True)
+        return MENTOR_SPHERE
+    await query.answer()
+    await query.edit_message_text(
+        msg.ASK_MENTOR_EXP,
+        reply_markup=_radio_kb(msg.MENTOR_EXP_LEVELS, "mexp"),
+    )
+    return MENTOR_EXP
+
+
+async def mentor_got_exp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    context.user_data["exp_level"] = query.data.split(":", 2)[2]
+    await query.edit_message_text(
+        msg.ASK_DEVOTE_TIME,
+        reply_markup=_radio_kb(msg.DEVOTE_TIME_OPTIONS, "mtime"),
+    )
+    return MENTOR_TIME
+
+
+async def mentor_got_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    context.user_data["devote_time"] = query.data.split(":", 2)[2]
+    context.user_data["mentee_exp_prefs"] = set()
+    await query.edit_message_text(
+        msg.ASK_MENTEE_PREFS,
+        reply_markup=_checkbox_kb(msg.MENTEE_EXP_LEVELS, set(), "mmenteeexp"),
+    )
+    return MENTOR_MENTEE_PREF
+
+
+async def mentor_mentee_pref_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    level = query.data.split(":", 2)[2]
+    selected: set[str] = context.user_data.setdefault("mentee_exp_prefs", set())
+    selected.symmetric_difference_update({level})
+    await query.edit_message_reply_markup(
+        reply_markup=_checkbox_kb(msg.MENTEE_EXP_LEVELS, selected, "mmenteeexp")
+    )
+    return MENTOR_MENTEE_PREF
+
+
+async def mentor_mentee_pref_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    if not context.user_data.get("mentee_exp_prefs"):
+        await query.answer("Please select at least one preference.", show_alert=True)
+        return MENTOR_MENTEE_PREF
+    await query.answer()
+    await query.edit_message_text(
+        msg.ASK_EXTRA_MENTOR,
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("Skip", callback_data="extra:skip")]]
+        ),
+    )
+    return MENTOR_EXTRA
+
+
+async def mentor_got_extra_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["extra"] = update.message.text.strip()
+    data = _serialize_sets(context.user_data)
+    await update.message.reply_text(msg.mentor_summary(data), reply_markup=_confirm_kb())
+    return MENTOR_CONFIRM
+
+
+async def mentor_extra_skip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    context.user_data["extra"] = None
+    data = _serialize_sets(context.user_data)
+    await query.edit_message_text(msg.mentor_summary(data), reply_markup=_confirm_kb())
+    return MENTOR_CONFIRM
+
+
+async def mentor_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    if query.data == "confirm:no":
+        await query.edit_message_text(msg.REGISTRATION_CANCELLED)
+        return ConversationHandler.END
+    data = context.user_data
+    await db.save_mentor(
+        chat_id=update.effective_chat.id,
+        full_name=data["full_name"],
+        spheres=list(data["spheres"]),
+        exp_level=data["exp_level"],
+        devote_time=data["devote_time"],
+        mentee_exp_prefs=list(data["mentee_exp_prefs"]),
+        extra=data.get("extra"),
+    )
+    await query.edit_message_text(msg.REGISTRATION_SAVED)
+    return ConversationHandler.END
+
+
+# ── Shared helpers ─────────────────────────────────────────────────────────────
+
+def _serialize_sets(data: dict) -> dict:
+    """Convert set values to sorted lists so summary formatters can join them."""
+    return {
+        k: sorted(v) if isinstance(v, set) else v
+        for k, v in data.items()
+    }
+
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text(msg.REGISTRATION_CANCELLED)
+    return ConversationHandler.END
