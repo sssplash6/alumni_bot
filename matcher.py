@@ -1,7 +1,11 @@
 # matcher.py
+import logging
+
 _TIME_OPTIONS = ["1–2 hrs/week", "3–5 hrs/week", "5+ hrs/week"]
 
 Match = tuple[int, int, float]  # (mentor_chat_id, mentee_chat_id, score)
+
+logger = logging.getLogger(__name__)
 
 
 def _time_score(mentor_time: str, mentee_time: str) -> float:
@@ -9,6 +13,7 @@ def _time_score(mentor_time: str, mentee_time: str) -> float:
         mi = _TIME_OPTIONS.index(mentor_time)
         ti = _TIME_OPTIONS.index(mentee_time)
     except ValueError:
+        logger.warning("Unknown devote_time value: mentor=%r mentee=%r", mentor_time, mentee_time)
         return 0.0
     diff = abs(mi - ti)
     return 10.0 if diff == 0 else 5.0 if diff == 1 else 0.0

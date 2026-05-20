@@ -89,6 +89,11 @@ def test_run_matching_conflict_resolved_by_score():
     # mentor1 scores 100 vs mentee10, mentor2 scores 95 — mentor1 wins conflict
     assert match_map[1] == 10
     assert match_map[2] == 11
+    assert len(matches) == 2
+    # mentor1 scored 100.0 (exact time), mentor2 scored 95.0 (one tier off) on mentee11
+    match_scores = {m[0]: m[2] for m in matches}
+    assert match_scores[1] == pytest.approx(100.0)
+    assert match_scores[2] == pytest.approx(30.0)
 
 
 def test_run_matching_empty_inputs():
@@ -103,3 +108,10 @@ def test_run_matching_more_mentors_than_mentees():
     matches = run_matching(mentors, mentees)
     assert len(matches) == 1
     assert matches[0][1] == 10
+
+
+def test_unknown_devote_time_returns_zero_time_score():
+    mentor = _mentor(devote_time="unknown")
+    mentee = _mentee(devote_time="1–2 hrs/week")
+    # sphere: 65, mentee_exp: 15, mentor_exp: 10, time: 0 (unknown → warning, 0pts)
+    assert compute_score(mentor, mentee) == pytest.approx(90.0)
