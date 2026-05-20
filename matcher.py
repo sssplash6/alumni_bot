@@ -1,7 +1,7 @@
 # matcher.py
 import logging
 
-_TIME_OPTIONS = ["1–2 hrs/week", "3–5 hrs/week", "5+ hrs/week"]
+from messages import DEVOTE_TIME_OPTIONS as _TIME_OPTIONS
 
 Match = tuple[int, int, float]  # (mentor_chat_id, mentee_chat_id, score)
 
