@@ -453,6 +453,11 @@ async def admin_match(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text(msg.MATCH_BLOCKED_OPEN)
         return
 
+    _, _, existing_matches = await db.get_registration_counts()
+    if existing_matches > 0:
+        await update.message.reply_text(msg.MATCH_ALREADY_RAN)
+        return
+
     mentors = await db.get_all_mentors()
     mentees = await db.get_all_mentees()
     if not mentors or not mentees:

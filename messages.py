@@ -152,6 +152,7 @@ APPS_OPENED = (
 APPS_CLOSED_ADMIN = "Applications are now closed. Run /match to pair mentors with mentees."
 MATCH_BLOCKED_OPEN = "Close applications first with /close before running /match."
 MATCH_BLOCKED_EMPTY = "Cannot run matching: need at least one mentor and one mentee."
+MATCH_ALREADY_RAN = "Matching already ran. Check /status for existing matches."
 MATCH_DONE = (
     "Matching complete!\n\n"
     "Matched pairs: {matched}\n"
