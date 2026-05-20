@@ -86,11 +86,10 @@ def test_run_matching_conflict_resolved_by_score():
 
     matches = run_matching([mentor1, mentor2], [mentee10, mentee11])
     match_map = {m[0]: m[1] for m in matches}
-    # mentor1 scores 100 vs mentee10, mentor2 scores 95 — mentor1 wins conflict
+    # mentor1 scores 100 vs mentee10, mentor2 scores 30 vs mentee11 (no sphere overlap)
     assert match_map[1] == 10
     assert match_map[2] == 11
     assert len(matches) == 2
-    # mentor1 scored 100.0 (exact time), mentor2 scored 95.0 (one tier off) on mentee11
     match_scores = {m[0]: m[2] for m in matches}
     assert match_scores[1] == pytest.approx(100.0)
     assert match_scores[2] == pytest.approx(30.0)
