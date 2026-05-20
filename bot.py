@@ -418,3 +418,184 @@ async def mentee_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return ConversationHandler.END
     await query.edit_message_text(msg.REGISTRATION_SAVED)
     return ConversationHandler.END
+
+
+# ── Admin commands ─────────────────────────────────────────────────────────────
+
+async def admin_open(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_user.id != ADMIN_ID:
+        return
+    await db.set_applications_open(True)
+    await update.message.reply_text(msg.APPS_OPENED)
+
+
+async def admin_close(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_user.id != ADMIN_ID:
+        return
+    await db.set_applications_open(False)
+    await update.message.reply_text(msg.APPS_CLOSED_ADMIN)
+
+
+async def admin_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_user.id != ADMIN_ID:
+        return
+    mentor_count, mentee_count, match_count = await db.get_registration_counts()
+    is_open = await db.is_applications_open()
+    await update.message.reply_text(
+        msg.status_text(mentor_count, mentee_count, match_count, is_open)
+    )
+
+
+async def admin_match(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_user.id != ADMIN_ID:
+        return
+    if await db.is_applications_open():
+        await update.message.reply_text(msg.MATCH_BLOCKED_OPEN)
+        return
+
+    mentors = await db.get_all_mentors()
+    mentees = await db.get_all_mentees()
+    if not mentors or not mentees:
+        await update.message.reply_text(msg.MATCH_BLOCKED_EMPTY)
+        return
+
+    matches = run_matching(mentors, mentees)
+    await db.save_matches(matches)
+
+    mentor_by_id = {m["chat_id"]: m for m in mentors}
+    mentee_by_id = {m["chat_id"]: m for m in mentees}
+    matched_mentor_ids = {m[0] for m in matches}
+    matched_mentee_ids = {m[1] for m in matches}
+
+    for mentor_id, mentee_id, _ in matches:
+        mentee = mentee_by_id[mentee_id]
+        mentor = mentor_by_id[mentor_id]
+        try:
+            await context.bot.send_message(
+                chat_id=mentor_id,
+                text=msg.mentor_match_text(mentee),
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        "Message your mentee",
+                        url=f"tg://user?id={mentee_id}",
+                    )
+                ]]),
+            )
+        except Exception:
+            logger.exception("Failed to notify mentor %d", mentor_id)
+        try:
+            await context.bot.send_message(
+                chat_id=mentee_id,
+                text=msg.mentee_match_text(mentor),
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        "Message your mentor",
+                        url=f"tg://user?id={mentor_id}",
+                    )
+                ]]),
+            )
+        except Exception:
+            logger.exception("Failed to notify mentee %d", mentee_id)
+
+    for mentor in mentors:
+        if mentor["chat_id"] not in matched_mentor_ids:
+            try:
+                await context.bot.send_message(
+                    chat_id=mentor["chat_id"], text=msg.NO_MATCH_MENTOR
+                )
+            except Exception:
+                logger.exception("Failed to notify unmatched mentor %d", mentor["chat_id"])
+
+    for mentee in mentees:
+        if mentee["chat_id"] not in matched_mentee_ids:
+            try:
+                await context.bot.send_message(
+                    chat_id=mentee["chat_id"], text=msg.NO_MATCH_MENTEE
+                )
+            except Exception:
+                logger.exception("Failed to notify unmatched mentee %d", mentee["chat_id"])
+
+    await update.message.reply_text(
+        msg.MATCH_DONE.format(
+            matched=len(matches),
+            unmatched_mentors=len(mentors) - len(matched_mentor_ids),
+            unmatched_mentees=len(mentees) - len(matched_mentee_ids),
+        )
+    )
+
+
+# ── App builder ────────────────────────────────────────────────────────────────
+
+def build_app() -> Application:
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .connect_timeout(30)
+        .read_timeout(30)
+        .write_timeout(30)
+        .build()
+    )
+
+    _private = filters.ChatType.PRIVATE
+
+    mentor_conv = ConversationHandler(
+        entry_points=[CommandHandler("mentor", mentor_start, filters=_private)],
+        states={
+            MENTOR_NAME: [MessageHandler(_private & filters.TEXT & ~filters.COMMAND, mentor_got_name)],
+            MENTOR_SPHERE: [
+                CallbackQueryHandler(mentor_sphere_toggle, pattern=r"^toggle:msphere:"),
+                CallbackQueryHandler(mentor_sphere_done, pattern=r"^done:msphere$"),
+            ],
+            MENTOR_EXP: [CallbackQueryHandler(mentor_got_exp, pattern=r"^select:mexp:")],
+            MENTOR_TIME: [CallbackQueryHandler(mentor_got_time, pattern=r"^select:mtime:")],
+            MENTOR_MENTEE_PREF: [
+                CallbackQueryHandler(mentor_mentee_pref_toggle, pattern=r"^toggle:mmenteeexp:"),
+                CallbackQueryHandler(mentor_mentee_pref_done, pattern=r"^done:mmenteeexp$"),
+            ],
+            MENTOR_EXTRA: [
+                MessageHandler(_private & filters.TEXT & ~filters.COMMAND, mentor_got_extra_text),
+                CallbackQueryHandler(mentor_extra_skip, pattern=r"^extra:skip$"),
+            ],
+            MENTOR_CONFIRM: [CallbackQueryHandler(mentor_confirm, pattern=r"^confirm:")],
+        },
+        fallbacks=[CommandHandler("cancel", cancel, filters=_private)],
+        per_message=False,
+    )
+
+    mentee_conv = ConversationHandler(
+        entry_points=[CommandHandler("mentee", mentee_start, filters=_private)],
+        states={
+            MENTEE_NAME: [MessageHandler(_private & filters.TEXT & ~filters.COMMAND, mentee_got_name)],
+            MENTEE_SPHERE: [
+                CallbackQueryHandler(mentee_sphere_toggle, pattern=r"^toggle:tsphere:"),
+                CallbackQueryHandler(mentee_sphere_done, pattern=r"^done:tsphere$"),
+            ],
+            MENTEE_EXP: [CallbackQueryHandler(mentee_got_exp, pattern=r"^select:texp:")],
+            MENTEE_MENTOR_PREF: [
+                CallbackQueryHandler(mentee_mentor_pref_toggle, pattern=r"^toggle:tmentorexp:"),
+                CallbackQueryHandler(mentee_mentor_pref_done, pattern=r"^done:tmentorexp$"),
+            ],
+            MENTEE_EXTRA: [
+                MessageHandler(_private & filters.TEXT & ~filters.COMMAND, mentee_got_extra_text),
+                CallbackQueryHandler(mentee_extra_skip, pattern=r"^extra:skip$"),
+            ],
+            MENTEE_TIME: [CallbackQueryHandler(mentee_got_time, pattern=r"^select:ttime:")],
+            MENTEE_CONSENT: [
+                CallbackQueryHandler(mentee_consent_toggle, pattern=r"^consent:toggle$"),
+                CallbackQueryHandler(mentee_consent_done, pattern=r"^consent:done$"),
+            ],
+            MENTEE_CONFIRM: [CallbackQueryHandler(mentee_confirm, pattern=r"^confirm:")],
+        },
+        fallbacks=[CommandHandler("cancel", cancel, filters=_private)],
+        per_message=False,
+    )
+
+    app.add_handler(CommandHandler("start", start, filters=_private))
+    app.add_handler(mentor_conv)
+    app.add_handler(mentee_conv)
+    app.add_handler(CommandHandler("open", admin_open, filters=_private))
+    app.add_handler(CommandHandler("close", admin_close, filters=_private))
+    app.add_handler(CommandHandler("status", admin_status, filters=_private))
+    app.add_handler(CommandHandler("match", admin_match, filters=_private))
+
+    return app
