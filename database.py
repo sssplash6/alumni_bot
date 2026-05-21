@@ -95,7 +95,7 @@ async def save_mentor(
 ) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            """INSERT OR REPLACE INTO mentors
+            """INSERT OR IGNORE INTO mentors
                (chat_id, full_name, spheres, exp_level, devote_time, mentee_exp_prefs, extra, registered_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (
@@ -119,7 +119,7 @@ async def save_mentee(
 ) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            """INSERT OR REPLACE INTO mentees
+            """INSERT OR IGNORE INTO mentees
                (chat_id, full_name, spheres, exp_level, mentor_exp_prefs, extra, devote_time, consent, registered_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (

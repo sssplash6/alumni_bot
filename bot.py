@@ -478,6 +478,7 @@ async def review_decision(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     parts = query.data.split(":")
     if len(parts) != 4:
         logger.warning("review_decision received unexpected callback data: %r", query.data)
+        await query.edit_message_text(msg.REVIEW_ERROR)
         return
     _, action, role, chat_id_str = parts
     chat_id = int(chat_id_str)

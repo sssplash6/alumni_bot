@@ -37,14 +37,6 @@ START_CLOSED = (
 
 # ── General ──────────────────────────────────────────────────────────────────
 
-START_TEXT = (
-    "Welcome! This bot connects mentors with mentees.\n\n"
-    "Commands:\n"
-    "/mentor — register as a mentor\n"
-    "/mentee — register as a mentee\n"
-    "/cancel — cancel current registration"
-)
-
 APPS_CLOSED = "Applications are currently closed. Stay tuned for the next round!"
 ALREADY_REGISTERED = (
     "You're already registered. If you need to make changes, please contact the admin."
