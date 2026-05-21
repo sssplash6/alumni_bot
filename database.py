@@ -50,6 +50,19 @@ async def init_db() -> None:
                 matched_at      TEXT    NOT NULL
             )
         """)
+        # Migrations: add status column to existing tables if not present
+        try:
+            await db.execute(
+                "ALTER TABLE mentors ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'"
+            )
+        except Exception:
+            pass  # column already exists
+        try:
+            await db.execute(
+                "ALTER TABLE mentees ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'"
+            )
+        except Exception:
+            pass  # column already exists
         await db.commit()
 
 
@@ -193,3 +206,84 @@ async def get_registration_counts() -> tuple[int, int, int]:
         async with db.execute("SELECT COUNT(*) FROM matches") as cur:
             (matches,) = await cur.fetchone()
     return mentors, mentees, matches
+
+
+async def get_pending_mentors() -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM mentors WHERE status = 'pending'") as cur:
+            rows = await cur.fetchall()
+    return [_parse_mentor_row(dict(r)) for r in rows]
+
+
+async def get_pending_mentees() -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM mentees WHERE status = 'pending'") as cur:
+            rows = await cur.fetchall()
+    return [_parse_mentee_row(dict(r)) for r in rows]
+
+
+async def set_mentor_status(chat_id: int, status: str) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE mentors SET status = ? WHERE chat_id = ?", (status, chat_id)
+        )
+        await db.commit()
+
+
+async def set_mentee_status(chat_id: int, status: str) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE mentees SET status = ? WHERE chat_id = ?", (status, chat_id)
+        )
+        await db.commit()
+
+
+async def get_approved_mentors() -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM mentors WHERE status = 'approved'") as cur:
+            rows = await cur.fetchall()
+    return [_parse_mentor_row(dict(r)) for r in rows]
+
+
+async def get_approved_mentees() -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM mentees WHERE status = 'approved'") as cur:
+            rows = await cur.fetchall()
+    return [_parse_mentee_row(dict(r)) for r in rows]
+
+
+async def get_pending_counts() -> tuple[int, int]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT COUNT(*) FROM mentors WHERE status = 'pending'"
+        ) as cur:
+            (mentor_pending,) = await cur.fetchone()
+        async with db.execute(
+            "SELECT COUNT(*) FROM mentees WHERE status = 'pending'"
+        ) as cur:
+            (mentee_pending,) = await cur.fetchone()
+    return mentor_pending, mentee_pending
+
+
+async def get_review_summary() -> dict:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT status, COUNT(*) FROM mentors GROUP BY status"
+        ) as cur:
+            mentor_counts = dict(await cur.fetchall())
+        async with db.execute(
+            "SELECT status, COUNT(*) FROM mentees GROUP BY status"
+        ) as cur:
+            mentee_counts = dict(await cur.fetchall())
+    return {
+        "mentor_approved": mentor_counts.get("approved", 0),
+        "mentor_denied":   mentor_counts.get("denied", 0),
+        "mentor_pending":  mentor_counts.get("pending", 0),
+        "mentee_approved": mentee_counts.get("approved", 0),
+        "mentee_denied":   mentee_counts.get("denied", 0),
+        "mentee_pending":  mentee_counts.get("pending", 0),
+    }
