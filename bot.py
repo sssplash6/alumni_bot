@@ -14,7 +14,7 @@ from telegram.ext import (
 
 import database as db
 import messages as msg
-from config import ADMIN_ID, BOT_TOKEN
+from config import ADMIN_IDS, BOT_TOKEN
 from matcher import run_matching
 
 logger = logging.getLogger(__name__)
@@ -423,21 +423,21 @@ async def mentee_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 # ── Admin commands ─────────────────────────────────────────────────────────────
 
 async def admin_open(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_user.id != ADMIN_ID:
+    if update.effective_user.id not in ADMIN_IDS:
         return
     await db.set_applications_open(True)
     await update.message.reply_text(msg.APPS_OPENED)
 
 
 async def admin_close(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_user.id != ADMIN_ID:
+    if update.effective_user.id not in ADMIN_IDS:
         return
     await db.set_applications_open(False)
     await update.message.reply_text(msg.APPS_CLOSED_ADMIN)
 
 
 async def admin_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_user.id != ADMIN_ID:
+    if update.effective_user.id not in ADMIN_IDS:
         return
     mentor_count, mentee_count, match_count = await db.get_registration_counts()
     is_open = await db.is_applications_open()
@@ -447,7 +447,7 @@ async def admin_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def admin_match(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_user.id != ADMIN_ID:
+    if update.effective_user.id not in ADMIN_IDS:
         return
     if await db.is_applications_open():
         await update.message.reply_text(msg.MATCH_BLOCKED_OPEN)
