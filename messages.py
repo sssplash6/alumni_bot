@@ -62,6 +62,7 @@ SAVE_ERROR = "Something went wrong saving your registration. Please try again la
 
 REVIEW_BLOCKED_OPEN = "Close applications first with /close before reviewing."
 REVIEW_NO_PENDING = "No pending applications to review."
+REVIEW_ERROR = "Something went wrong. Please try /review again."
 
 # ── Mentor form ───────────────────────────────────────────────────────────────
 

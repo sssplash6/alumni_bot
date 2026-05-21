@@ -475,7 +475,11 @@ async def review_decision(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await query.answer()
     if update.effective_user.id not in ADMIN_IDS:
         return
-    _, action, role, chat_id_str = query.data.split(":")
+    parts = query.data.split(":")
+    if len(parts) != 4:
+        logger.warning("review_decision received unexpected callback data: %r", query.data)
+        return
+    _, action, role, chat_id_str = parts
     chat_id = int(chat_id_str)
     status = "approved" if action == "approve" else "denied"
     try:
@@ -485,7 +489,7 @@ async def review_decision(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await db.set_mentee_status(chat_id, status)
     except Exception:
         logger.exception("Failed to set %s status for %s %d", status, role, chat_id)
-        await query.edit_message_text("Something went wrong. Please try /review again.")
+        await query.edit_message_text(msg.REVIEW_ERROR)
         return
     pending_mentors = await db.get_pending_mentors()
     pending_mentees = await db.get_pending_mentees()
