@@ -101,6 +101,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 # ── Mentor flow ───────────────────────────────────────────────────────────────
 
 async def mentor_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.callback_query:
+        await update.callback_query.answer()
     chat_id = update.effective_chat.id
     if not await db.is_applications_open():
         await update.message.reply_text(msg.APPS_CLOSED)
@@ -109,7 +111,7 @@ async def mentor_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         await update.message.reply_text(msg.ALREADY_REGISTERED)
         return ConversationHandler.END
     context.user_data.clear()
-    await update.message.reply_text(msg.WELCOME_MENTOR)
+    await update.effective_message.reply_text(msg.WELCOME_MENTOR)
     return MENTOR_NAME
 
 
@@ -261,6 +263,8 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 # ── Mentee flow ───────────────────────────────────────────────────────────────
 
 async def mentee_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.callback_query:
+        await update.callback_query.answer()
     chat_id = update.effective_chat.id
     if not await db.is_applications_open():
         await update.message.reply_text(msg.APPS_CLOSED)
@@ -269,7 +273,7 @@ async def mentee_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         await update.message.reply_text(msg.ALREADY_REGISTERED)
         return ConversationHandler.END
     context.user_data.clear()
-    await update.message.reply_text(msg.WELCOME_MENTEE)
+    await update.effective_message.reply_text(msg.WELCOME_MENTEE)
     return MENTEE_NAME
 
 
