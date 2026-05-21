@@ -85,7 +85,17 @@ def _consent_kb(agreed: bool) -> InlineKeyboardMarkup:
 # ── /start ────────────────────────────────────────────────────────────────────
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(msg.START_TEXT)
+    is_open = await db.is_applications_open()
+    if is_open:
+        await update.message.reply_text(
+            msg.START_OPEN,
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("📋 Register as Mentor", callback_data="start:mentor"),
+                InlineKeyboardButton("🙋 Register as Mentee", callback_data="start:mentee"),
+            ]]),
+        )
+    else:
+        await update.message.reply_text(msg.START_CLOSED)
 
 
 # ── Mentor flow ───────────────────────────────────────────────────────────────
@@ -440,9 +450,10 @@ async def admin_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if update.effective_user.id not in ADMIN_IDS:
         return
     mentor_count, mentee_count, match_count = await db.get_registration_counts()
+    mentor_pending, mentee_pending = await db.get_pending_counts()
     is_open = await db.is_applications_open()
     await update.message.reply_text(
-        msg.status_text(mentor_count, mentee_count, match_count, is_open)
+        msg.status_text(mentor_count, mentee_count, match_count, is_open, mentor_pending, mentee_pending)
     )
 
 
@@ -544,7 +555,10 @@ def build_app() -> Application:
     _private = filters.ChatType.PRIVATE
 
     mentor_conv = ConversationHandler(
-        entry_points=[CommandHandler("mentor", mentor_start, filters=_private)],
+        entry_points=[
+            CommandHandler("mentor", mentor_start, filters=_private),
+            CallbackQueryHandler(mentor_start, pattern=r"^start:mentor$"),
+        ],
         states={
             MENTOR_NAME: [MessageHandler(_private & filters.TEXT & ~filters.COMMAND, mentor_got_name)],
             MENTOR_SPHERE: [
@@ -568,7 +582,10 @@ def build_app() -> Application:
     )
 
     mentee_conv = ConversationHandler(
-        entry_points=[CommandHandler("mentee", mentee_start, filters=_private)],
+        entry_points=[
+            CommandHandler("mentee", mentee_start, filters=_private),
+            CallbackQueryHandler(mentee_start, pattern=r"^start:mentee$"),
+        ],
         states={
             MENTEE_NAME: [MessageHandler(_private & filters.TEXT & ~filters.COMMAND, mentee_got_name)],
             MENTEE_SPHERE: [
