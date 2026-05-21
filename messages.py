@@ -22,6 +22,19 @@ MENTEE_EXP_LEVELS = [
 
 DEVOTE_TIME_OPTIONS = ["1–2 hrs/week", "3–5 hrs/week", "5+ hrs/week"]
 
+# ── Start landing ─────────────────────────────────────────────────────────────
+
+START_OPEN = (
+    "🎓 Welcome to the Alumni Mentorship Program!\n\n"
+    "Connect with mentors and mentees from your alumni network.\n\n"
+    "Applications are currently open ✅"
+)
+START_CLOSED = (
+    "🎓 Welcome to the Alumni Mentorship Program!\n\n"
+    "Applications are currently closed 🔒\n\n"
+    "Stay tuned for the next round!"
+)
+
 # ── General ──────────────────────────────────────────────────────────────────
 
 START_TEXT = (
@@ -44,6 +57,11 @@ REGISTRATION_SAVED = (
 )
 CONSENT_REQUIRED = "You must agree to the terms to complete registration."
 SAVE_ERROR = "Something went wrong saving your registration. Please try again later."
+
+# ── Review ────────────────────────────────────────────────────────────────────
+
+REVIEW_BLOCKED_OPEN = "Close applications first with /close before reviewing."
+REVIEW_NO_PENDING = "No pending applications to review."
 
 # ── Mentor form ───────────────────────────────────────────────────────────────
 
@@ -161,11 +179,61 @@ MATCH_DONE = (
 )
 
 
-def status_text(mentors: int, mentees: int, matches: int, is_open: bool) -> str:
+def status_text(
+    mentors: int,
+    mentees: int,
+    matches: int,
+    is_open: bool,
+    mentor_pending: int = 0,
+    mentee_pending: int = 0,
+) -> str:
+    mentor_str = str(mentors)
+    if mentor_pending:
+        mentor_str += f" ({mentor_pending} pending review)"
+    mentee_str = str(mentees)
+    if mentee_pending:
+        mentee_str += f" ({mentee_pending} pending review)"
     return (
         "Status\n\n"
         f"Applications: {'Open ✅' if is_open else 'Closed 🔒'}\n"
-        f"Registered mentors: {mentors}\n"
-        f"Registered mentees: {mentees}\n"
+        f"Registered mentors: {mentor_str}\n"
+        f"Registered mentees: {mentee_str}\n"
         f"Existing matches: {matches}"
+    )
+
+
+def mentor_review_card(mentor: dict, pending_count: int) -> str:
+    return (
+        f"👤 Mentor — {pending_count} pending\n\n"
+        f"Name: {mentor['full_name']}\n"
+        f"Sphere(s): {', '.join(mentor['spheres'])}\n"
+        f"Experience: {mentor['exp_level']}\n"
+        f"Time/week: {mentor['devote_time']}\n"
+        f"Open to mentoring: {', '.join(mentor['mentee_exp_prefs'])}\n"
+        f"Note: {mentor['extra'] or '—'}"
+    )
+
+
+def mentee_review_card(mentee: dict, pending_count: int) -> str:
+    return (
+        f"🙋 Mentee — {pending_count} pending\n\n"
+        f"Name: {mentee['full_name']}\n"
+        f"Sphere(s): {', '.join(mentee['spheres'])}\n"
+        f"Experience: {mentee['exp_level']}\n"
+        f"Preferred mentor: {', '.join(mentee['mentor_exp_prefs'])}\n"
+        f"Time/week: {mentee['devote_time']}\n"
+        f"Note: {mentee['extra'] or '—'}"
+    )
+
+
+def review_complete_text(summary: dict) -> str:
+    return (
+        "✅ Review complete!\n\n"
+        f"Mentors: {summary['mentor_approved']} approved · "
+        f"{summary['mentor_denied']} denied · "
+        f"{summary['mentor_pending']} pending\n"
+        f"Mentees: {summary['mentee_approved']} approved · "
+        f"{summary['mentee_denied']} denied · "
+        f"{summary['mentee_pending']} pending\n\n"
+        "Run /match when ready."
     )
