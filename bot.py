@@ -436,6 +436,76 @@ async def mentee_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 # ── Admin commands ─────────────────────────────────────────────────────────────
 
+# ── Review ────────────────────────────────────────────────────────────────────
+
+def _review_kb(role: str, chat_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Approve", callback_data=f"review:approve:{role}:{chat_id}"),
+        InlineKeyboardButton("❌ Deny", callback_data=f"review:deny:{role}:{chat_id}"),
+    ]])
+
+
+async def admin_review(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+    if await db.is_applications_open():
+        await update.message.reply_text(msg.REVIEW_BLOCKED_OPEN)
+        return
+    pending_mentors = await db.get_pending_mentors()
+    pending_mentees = await db.get_pending_mentees()
+    if not pending_mentors and not pending_mentees:
+        await update.message.reply_text(msg.REVIEW_NO_PENDING)
+        return
+    if pending_mentors:
+        mentor = pending_mentors[0]
+        await update.message.reply_text(
+            msg.mentor_review_card(mentor, len(pending_mentors)),
+            reply_markup=_review_kb("mentor", mentor["chat_id"]),
+        )
+    else:
+        mentee = pending_mentees[0]
+        await update.message.reply_text(
+            msg.mentee_review_card(mentee, len(pending_mentees)),
+            reply_markup=_review_kb("mentee", mentee["chat_id"]),
+        )
+
+
+async def review_decision(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+    _, action, role, chat_id_str = query.data.split(":")
+    chat_id = int(chat_id_str)
+    status = "approved" if action == "approve" else "denied"
+    try:
+        if role == "mentor":
+            await db.set_mentor_status(chat_id, status)
+        else:
+            await db.set_mentee_status(chat_id, status)
+    except Exception:
+        logger.exception("Failed to set %s status for %s %d", status, role, chat_id)
+        await query.edit_message_text("Something went wrong. Please try /review again.")
+        return
+    pending_mentors = await db.get_pending_mentors()
+    pending_mentees = await db.get_pending_mentees()
+    if pending_mentors:
+        mentor = pending_mentors[0]
+        await query.edit_message_text(
+            msg.mentor_review_card(mentor, len(pending_mentors)),
+            reply_markup=_review_kb("mentor", mentor["chat_id"]),
+        )
+    elif pending_mentees:
+        mentee = pending_mentees[0]
+        await query.edit_message_text(
+            msg.mentee_review_card(mentee, len(pending_mentees)),
+            reply_markup=_review_kb("mentee", mentee["chat_id"]),
+        )
+    else:
+        summary = await db.get_review_summary()
+        await query.edit_message_text(msg.review_complete_text(summary))
+
+
 async def admin_open(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_user.id not in ADMIN_IDS:
         return
@@ -473,17 +543,17 @@ async def admin_match(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text(msg.MATCH_ALREADY_RAN)
         return
 
-    mentors = await db.get_all_mentors()
-    mentees = await db.get_all_mentees()
-    if not mentors or not mentees:
+    approved_mentors = await db.get_approved_mentors()
+    approved_mentees = await db.get_approved_mentees()
+    if not approved_mentors or not approved_mentees:
         await update.message.reply_text(msg.MATCH_BLOCKED_EMPTY)
         return
 
-    matches = run_matching(mentors, mentees)
+    matches = run_matching(approved_mentors, approved_mentees)
     await db.save_matches(matches)
 
-    mentor_by_id = {m["chat_id"]: m for m in mentors}
-    mentee_by_id = {m["chat_id"]: m for m in mentees}
+    mentor_by_id = {m["chat_id"]: m for m in approved_mentors}
+    mentee_by_id = {m["chat_id"]: m for m in approved_mentees}
     matched_mentor_ids = {m[0] for m in matches}
     matched_mentee_ids = {m[1] for m in matches}
 
@@ -517,7 +587,13 @@ async def admin_match(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         except Exception:
             logger.exception("Failed to notify mentee %d", mentee_id)
 
-    for mentor in mentors:
+    # Notify unmatched: approved-but-unmatched + denied (not pending)
+    all_mentors = await db.get_all_mentors()
+    all_mentees = await db.get_all_mentees()
+
+    for mentor in all_mentors:
+        if mentor["status"] == "pending":
+            continue
         if mentor["chat_id"] not in matched_mentor_ids:
             try:
                 await context.bot.send_message(
@@ -526,7 +602,9 @@ async def admin_match(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             except Exception:
                 logger.exception("Failed to notify unmatched mentor %d", mentor["chat_id"])
 
-    for mentee in mentees:
+    for mentee in all_mentees:
+        if mentee["status"] == "pending":
+            continue
         if mentee["chat_id"] not in matched_mentee_ids:
             try:
                 await context.bot.send_message(
@@ -538,8 +616,8 @@ async def admin_match(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_text(
         msg.MATCH_DONE.format(
             matched=len(matches),
-            unmatched_mentors=len(mentors) - len(matched_mentor_ids),
-            unmatched_mentees=len(mentees) - len(matched_mentee_ids),
+            unmatched_mentors=len(approved_mentors) - len(matched_mentor_ids),
+            unmatched_mentees=len(approved_mentees) - len(matched_mentee_ids),
         )
     )
 
@@ -623,5 +701,7 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("close", admin_close, filters=_private))
     app.add_handler(CommandHandler("status", admin_status, filters=_private))
     app.add_handler(CommandHandler("match", admin_match, filters=_private))
+    app.add_handler(CommandHandler("review", admin_review, filters=_private))
+    app.add_handler(CallbackQueryHandler(review_decision, pattern=r"^review:"))
 
     return app
