@@ -19,6 +19,10 @@ from matcher import run_matching
 
 logger = logging.getLogger(__name__)
 
+# Hard-fixed reviewers who receive Admissions Program Fair registrations and
+# can approve/reject them. Carried over from the freshbot.
+APF_REVIEWER_CHAT_IDS: list[int] = [7185151344]
+
 # ── State constants ────────────────────────────────────────────────────────────
 
 (
@@ -41,6 +45,11 @@ logger = logging.getLogger(__name__)
     MENTEE_CONSENT,
     MENTEE_CONFIRM,
 ) = range(7, 15)
+
+(
+    APF_NAME,
+    APF_COHORT,
+) = range(15, 17)
 
 
 # ── Keyboard helpers ──────────────────────────────────────────────────────────
@@ -86,16 +95,23 @@ def _consent_kb(agreed: bool) -> InlineKeyboardMarkup:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     is_open = await db.is_applications_open()
+    fair_row = [InlineKeyboardButton(msg.BTN_APF, callback_data="start:fair")]
     if is_open:
         await update.message.reply_text(
             msg.START_OPEN,
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("📋 Register as Mentor", callback_data="start:mentor"),
-                InlineKeyboardButton("🙋 Register as Mentee", callback_data="start:mentee"),
-            ]]),
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("📋 Register as Mentor", callback_data="start:mentor"),
+                    InlineKeyboardButton("🙋 Register as Mentee", callback_data="start:mentee"),
+                ],
+                fair_row,
+            ]),
         )
     else:
-        await update.message.reply_text(msg.START_CLOSED)
+        await update.message.reply_text(
+            msg.START_CLOSED,
+            reply_markup=InlineKeyboardMarkup([fair_row]),
+        )
 
 
 # ── Mentor flow ───────────────────────────────────────────────────────────────
@@ -627,6 +643,165 @@ async def admin_match(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
 
 
+# ── Admissions Program Fair ─────────────────────────────────────────────────────
+
+async def apf_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.callback_query:
+        await update.callback_query.answer()
+    chat_id = update.effective_chat.id
+
+    existing = await db.apf_get_submission(chat_id)
+    if existing and existing["status"] == "approved":
+        await update.effective_message.reply_text(msg.APF_ALREADY_APPROVED)
+        return ConversationHandler.END
+    if existing and existing["status"] == "pending":
+        await update.effective_message.reply_text(msg.APF_ALREADY_PENDING)
+        return ConversationHandler.END
+
+    # Forward the configured fair post first, then start the registration questions.
+    post_chat_id = await db.get_setting("apf_post_chat_id")
+    post_message_id = await db.get_setting("apf_post_message_id")
+    if post_chat_id and post_message_id:
+        try:
+            await context.bot.copy_message(
+                chat_id=chat_id,
+                from_chat_id=int(post_chat_id),
+                message_id=int(post_message_id),
+            )
+        except Exception:
+            logger.exception("Failed to forward APF post to chat_id=%d", chat_id)
+            await update.effective_message.reply_text(msg.APF_INTRO, parse_mode="HTML")
+    else:
+        await update.effective_message.reply_text(msg.APF_INTRO, parse_mode="HTML")
+
+    context.user_data.clear()
+    await update.effective_message.reply_text(msg.APF_ASK_NAME)
+    return APF_NAME
+
+
+async def apf_got_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    name = update.message.text.strip()
+    if not name:
+        await update.message.reply_text(msg.APF_NAME_REQUIRED)
+        return APF_NAME
+    context.user_data["apf_full_name"] = name
+    await update.message.reply_text(msg.APF_ASK_COHORT)
+    return APF_COHORT
+
+
+async def apf_got_cohort(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    cohort = update.message.text.strip()
+    if not cohort:
+        await update.message.reply_text(msg.APF_COHORT_REQUIRED)
+        return APF_COHORT
+
+    chat_id = update.effective_chat.id
+    full_name = context.user_data.get("apf_full_name", "")
+    user = update.effective_user
+    first_name = user.first_name or "Unknown"
+    username = user.username
+
+    await db.apf_save_submission(chat_id, username, first_name, full_name, cohort)
+    await update.message.reply_text(msg.APF_SUBMITTED)
+
+    username_part = f" (@{username})" if username else ""
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton(msg.BTN_APF_APPROVE, callback_data=f"apf_approve:{chat_id}"),
+        InlineKeyboardButton(msg.BTN_APF_REJECT, callback_data=f"apf_reject:{chat_id}"),
+    ]])
+    reviewer_text = msg.APF_REVIEWER_ENTRY.format(
+        chat_id=chat_id,
+        first_name=first_name,
+        username_part=username_part,
+        full_name=full_name,
+        cohort=cohort,
+    )
+    for reviewer_id in APF_REVIEWER_CHAT_IDS:
+        try:
+            sent = await context.bot.send_message(
+                chat_id=reviewer_id,
+                text=reviewer_text,
+                parse_mode="HTML",
+                reply_markup=keyboard,
+            )
+            await db.apf_set_reviewer_message(chat_id, sent.message_id)
+        except Exception:
+            logger.exception("Failed to send APF registration to reviewer chat_id=%d", reviewer_id)
+
+    return ConversationHandler.END
+
+
+async def _apf_decision(update: Update, context: ContextTypes.DEFAULT_TYPE, decision: str) -> None:
+    query = update.callback_query
+    await query.answer()
+    if update.effective_user.id not in APF_REVIEWER_CHAT_IDS:
+        return
+
+    applicant_chat_id = int(query.data.split(":")[1])
+    submission = await db.apf_get_submission(applicant_chat_id)
+    if not submission or submission["status"] != "pending":
+        await query.answer(msg.APF_REVIEWER_ALREADY_DECIDED, show_alert=True)
+        return
+
+    base_text = query.message.text or ""
+    if decision == "approved":
+        await db.apf_set_status(applicant_chat_id, "approved")
+        applicant_msg = msg.APF_APPROVED
+        reviewer_confirmation = msg.APF_REVIEWER_APPROVED
+    else:
+        await db.apf_set_status(applicant_chat_id, "rejected")
+        applicant_msg = msg.APF_REJECTED
+        reviewer_confirmation = msg.APF_REVIEWER_REJECTED
+
+    try:
+        await context.bot.send_message(chat_id=applicant_chat_id, text=applicant_msg)
+    except Exception:
+        logger.exception("Failed to notify APF applicant chat_id=%d", applicant_chat_id)
+
+    await query.edit_message_text(
+        text=f"{base_text}\n\n{reviewer_confirmation}", reply_markup=None
+    )
+
+
+async def apf_approve_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _apf_decision(update, context, "approved")
+
+
+async def apf_reject_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _apf_decision(update, context, "rejected")
+
+
+async def apf_set_post(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_user.id not in APF_REVIEWER_CHAT_IDS:
+        return
+    reply = update.message.reply_to_message
+    if not reply:
+        await update.message.reply_text(msg.APF_SET_POST_USAGE)
+        return
+    await db.set_setting("apf_post_chat_id", str(reply.chat.id))
+    await db.set_setting("apf_post_message_id", str(reply.message_id))
+    await update.message.reply_text(msg.APF_SET_POST_SUCCESS)
+
+
+async def apf_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_user.id not in APF_REVIEWER_CHAT_IDS:
+        return
+    approved = await db.apf_get_by_status(["approved"])
+    if not approved:
+        await update.message.reply_text(msg.APF_LIST_EMPTY)
+        return
+    lines = [msg.APF_LIST_HEADER.format(count=len(approved))]
+    for idx, sub in enumerate(approved, start=1):
+        username_part = f" (@{sub['username']})" if sub.get("username") else ""
+        lines.append(msg.APF_LIST_ENTRY.format(
+            idx=idx,
+            full_name=sub["full_name"],
+            cohort=sub["cohort"],
+            username_part=username_part,
+        ))
+    await update.message.reply_text("\n".join(lines))
+
+
 # ── App builder ────────────────────────────────────────────────────────────────
 
 def build_app() -> Application:
@@ -699,9 +874,27 @@ def build_app() -> Application:
         per_message=False,
     )
 
+    apf_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("fair", apf_start, filters=_private),
+            CallbackQueryHandler(apf_start, pattern=r"^start:fair$"),
+        ],
+        states={
+            APF_NAME: [MessageHandler(_private & filters.TEXT & ~filters.COMMAND, apf_got_name)],
+            APF_COHORT: [MessageHandler(_private & filters.TEXT & ~filters.COMMAND, apf_got_cohort)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel, filters=_private)],
+        per_message=False,
+    )
+
     app.add_handler(CommandHandler("start", start, filters=_private))
     app.add_handler(mentor_conv)
     app.add_handler(mentee_conv)
+    app.add_handler(apf_conv)
+    app.add_handler(CommandHandler("apf_set_post", apf_set_post, filters=_private))
+    app.add_handler(CommandHandler("apf_list", apf_list, filters=_private))
+    app.add_handler(CallbackQueryHandler(apf_approve_callback, pattern=r"^apf_approve:"))
+    app.add_handler(CallbackQueryHandler(apf_reject_callback, pattern=r"^apf_reject:"))
     app.add_handler(CommandHandler("open", admin_open, filters=_private))
     app.add_handler(CommandHandler("close", admin_close, filters=_private))
     app.add_handler(CommandHandler("status", admin_status, filters=_private))
