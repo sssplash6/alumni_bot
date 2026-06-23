@@ -1,7 +1,13 @@
 # bot.py
 import logging
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+    Update,
+)
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -93,25 +99,23 @@ def _consent_kb(agreed: bool) -> InlineKeyboardMarkup:
 
 # ── /start ────────────────────────────────────────────────────────────────────
 
+def _main_kb(is_open: bool) -> ReplyKeyboardMarkup:
+    if is_open:
+        rows = [
+            [KeyboardButton(msg.BTN_MENTOR), KeyboardButton(msg.BTN_MENTEE)],
+            [KeyboardButton(msg.BTN_APF)],
+        ]
+    else:
+        rows = [[KeyboardButton(msg.BTN_APF)]]
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     is_open = await db.is_applications_open()
-    fair_row = [InlineKeyboardButton(msg.BTN_APF, callback_data="start:fair")]
-    if is_open:
-        await update.message.reply_text(
-            msg.START_OPEN,
-            reply_markup=InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("📋 Register as Mentor", callback_data="start:mentor"),
-                    InlineKeyboardButton("🙋 Register as Mentee", callback_data="start:mentee"),
-                ],
-                fair_row,
-            ]),
-        )
-    else:
-        await update.message.reply_text(
-            msg.START_CLOSED,
-            reply_markup=InlineKeyboardMarkup([fair_row]),
-        )
+    await update.message.reply_text(
+        msg.START_OPEN if is_open else msg.START_CLOSED,
+        reply_markup=_main_kb(is_open),
+    )
 
 
 # ── Mentor flow ───────────────────────────────────────────────────────────────
@@ -819,6 +823,7 @@ def build_app() -> Application:
     mentor_conv = ConversationHandler(
         entry_points=[
             CommandHandler("mentor", mentor_start, filters=_private),
+            MessageHandler(_private & filters.Text([msg.BTN_MENTOR]), mentor_start),
             CallbackQueryHandler(mentor_start, pattern=r"^start:mentor$"),
         ],
         states={
@@ -846,6 +851,7 @@ def build_app() -> Application:
     mentee_conv = ConversationHandler(
         entry_points=[
             CommandHandler("mentee", mentee_start, filters=_private),
+            MessageHandler(_private & filters.Text([msg.BTN_MENTEE]), mentee_start),
             CallbackQueryHandler(mentee_start, pattern=r"^start:mentee$"),
         ],
         states={
@@ -877,6 +883,7 @@ def build_app() -> Application:
     apf_conv = ConversationHandler(
         entry_points=[
             CommandHandler("fair", apf_start, filters=_private),
+            MessageHandler(_private & filters.Text([msg.BTN_APF]), apf_start),
             CallbackQueryHandler(apf_start, pattern=r"^start:fair$"),
         ],
         states={

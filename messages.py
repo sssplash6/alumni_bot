@@ -24,16 +24,8 @@ DEVOTE_TIME_OPTIONS = ["1–2 hrs/week", "3–5 hrs/week", "5+ hrs/week"]
 
 # ── Start landing ─────────────────────────────────────────────────────────────
 
-START_OPEN = (
-    "🎓 Welcome to the Alumni Mentorship Program!\n\n"
-    "Connect with mentors and mentees from your alumni network.\n\n"
-    "Applications are currently open ✅"
-)
-START_CLOSED = (
-    "🎓 Welcome to the Alumni Mentorship Program!\n\n"
-    "Applications are currently closed 🔒\n\n"
-    "Stay tuned for the next round!"
-)
+START_OPEN = "🎓 Welcome to the Alumni System of Freshman Academy."
+START_CLOSED = "🎓 Welcome to the Alumni System of Freshman Academy."
 
 # ── General ──────────────────────────────────────────────────────────────────
 
@@ -231,6 +223,11 @@ def review_complete_text(summary: dict) -> str:
         "Run /match when ready."
     )
 
+
+# ── Main keyboard buttons ─────────────────────────────────────────────────────
+
+BTN_MENTOR = "📋 Register as Mentor"
+BTN_MENTEE = "🙋 Register as Mentee"
 
 # ── Admissions Program Fair ───────────────────────────────────────────────────
 
