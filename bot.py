@@ -999,7 +999,7 @@ async def elysium_reject_callback(update: Update, context: ContextTypes.DEFAULT_
 
 
 async def elysium_set_post(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_user.id not in ELYSIUM_CONFIRMER_CHAT_IDS:
+    if update.effective_user.id not in ELYSIUM_CONFIRMER_CHAT_IDS + ADMIN_IDS:
         return
     reply = update.message.reply_to_message
     if not reply:
