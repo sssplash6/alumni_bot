@@ -274,6 +274,8 @@ BTN_APF_REJECT = "❌ Reject"
 
 APF_REVIEWER_APPROVED = "✅ Approved. Applicant has been notified."
 APF_REVIEWER_REJECTED = "❌ Rejected. Applicant has been notified."
+APF_REVIEWER_AUTO_APPROVED = "✅ Auto-approved — applicant is a verified group member."
+APF_REVIEWER_AUTO_REJECTED = "❌ Auto-rejected — applicant is not in any required group."
 APF_REVIEWER_ALREADY_DECIDED = "ℹ️ Decision already recorded for this registration."
 
 APF_SET_POST_SUCCESS = "✅ Admissions Program Fair post saved."

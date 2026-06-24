@@ -29,6 +29,13 @@ logger = logging.getLogger(__name__)
 # can approve/reject them. Carried over from the freshbot.
 APF_REVIEWER_CHAT_IDS: list[int] = [7185151344]
 
+# Groups the bot belongs to as a member. Elysium Fair registrants are
+# auto-approved if they belong to at least one of these, else auto-rejected.
+ELIGIBILITY_GROUP_IDS: list[int] = [-1001308713514, -1004219790871]
+
+# Telegram chat-member statuses that count as "currently in the group".
+_PRESENT_STATUSES = {"creator", "administrator", "member", "restricted"}
+
 # ── State constants ────────────────────────────────────────────────────────────
 
 (
@@ -116,6 +123,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         msg.START_OPEN if is_open else msg.START_CLOSED,
         reply_markup=_main_kb(is_open),
     )
+
+
+async def leave_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Immediately leave any group or supergroup the bot is added to.
+
+    This bot only operates in private chats; it has no group features."""
+    chat = update.effective_chat
+    if chat is None:
+        return
+    logger.info("Leaving group chat %s (%s)", chat.id, chat.title)
+    try:
+        await context.bot.leave_chat(chat.id)
+    except Exception:
+        logger.exception("Failed to leave chat %s", chat.id)
 
 
 # ── Mentor flow ───────────────────────────────────────────────────────────────
@@ -649,6 +670,21 @@ async def admin_match(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 # ── Admissions Program Fair ─────────────────────────────────────────────────────
 
+async def _is_eligibility_group_member(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
+    """True if the user currently belongs to at least one eligibility group."""
+    for group_id in ELIGIBILITY_GROUP_IDS:
+        try:
+            member = await context.bot.get_chat_member(chat_id=group_id, user_id=user_id)
+        except Exception:
+            logger.exception(
+                "Failed to check membership of user %d in group %d", user_id, group_id
+            )
+            continue
+        if member.status in _PRESENT_STATUSES:
+            return True
+    return False
+
+
 async def apf_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if update.callback_query:
         await update.callback_query.answer()
@@ -706,13 +742,20 @@ async def apf_got_cohort(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     username = user.username
 
     await db.apf_save_submission(chat_id, username, first_name, full_name, cohort)
-    await update.message.reply_text(msg.APF_SUBMITTED)
+
+    # Auto-decide based on membership in the eligibility groups: a member of at
+    # least one group is approved, everyone else is rejected. No manual review.
+    is_member = await _is_eligibility_group_member(context, chat_id)
+    if is_member:
+        await db.apf_set_status(chat_id, "approved")
+        await update.message.reply_text(msg.APF_APPROVED)
+        reviewer_status = msg.APF_REVIEWER_AUTO_APPROVED
+    else:
+        await db.apf_set_status(chat_id, "rejected")
+        await update.message.reply_text(msg.APF_REJECTED)
+        reviewer_status = msg.APF_REVIEWER_AUTO_REJECTED
 
     username_part = f" (@{username})" if username else ""
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton(msg.BTN_APF_APPROVE, callback_data=f"apf_approve:{chat_id}"),
-        InlineKeyboardButton(msg.BTN_APF_REJECT, callback_data=f"apf_reject:{chat_id}"),
-    ]])
     reviewer_text = msg.APF_REVIEWER_ENTRY.format(
         chat_id=chat_id,
         first_name=first_name,
@@ -720,15 +763,14 @@ async def apf_got_cohort(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         full_name=full_name,
         cohort=cohort,
     )
+    reviewer_text = f"{reviewer_text}\n\n{reviewer_status}"
     for reviewer_id in APF_REVIEWER_CHAT_IDS:
         try:
-            sent = await context.bot.send_message(
+            await context.bot.send_message(
                 chat_id=reviewer_id,
                 text=reviewer_text,
                 parse_mode="HTML",
-                reply_markup=keyboard,
             )
-            await db.apf_set_reviewer_message(chat_id, sent.message_id)
         except Exception:
             logger.exception("Failed to send APF registration to reviewer chat_id=%d", reviewer_id)
 
@@ -892,6 +934,14 @@ def build_app() -> Application:
         },
         fallbacks=[CommandHandler("cancel", cancel, filters=_private)],
         per_message=False,
+    )
+
+    # Leave any group/supergroup the bot is added to — it's private-chat only.
+    app.add_handler(
+        MessageHandler(
+            filters.StatusUpdate.NEW_CHAT_MEMBERS | filters.ChatType.GROUPS,
+            leave_group,
+        )
     )
 
     app.add_handler(CommandHandler("start", start, filters=_private))
