@@ -907,7 +907,9 @@ async def elysium_got_cohort(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await db.elysium_save_submission(chat_id, username, first_name, full_name, cohort)
     await update.message.reply_text(msg.ELYSIUM_SUBMITTED)
 
-    username_part = f" (@{username})" if username else ""
+    username_part = (
+        f' — <a href="https://t.me/{username}">@{username}</a>' if username else ""
+    )
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton(msg.BTN_ELYSIUM_APPROVE, callback_data=f"elysium_approve:{chat_id}"),
         InlineKeyboardButton(msg.BTN_ELYSIUM_REJECT, callback_data=f"elysium_reject:{chat_id}"),
