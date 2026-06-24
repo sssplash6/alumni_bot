@@ -291,8 +291,7 @@ BTN_ELYSIUM = "Join Elysium pre-2025"
 
 ELYSIUM_INTRO = (
     "<b>Join Elysium pre-2025</b>\n\n"
-    "Please answer the two short questions that follow — "
-    "your details will be reviewed before access is granted."
+    "Please answer the two short questions that follow to get your access link."
 )
 
 ELYSIUM_ASK_NAME = "What's your full name?"
@@ -304,42 +303,13 @@ ELYSIUM_ASK_COHORT = (
 ELYSIUM_NAME_REQUIRED = "Please type your full name to continue."
 ELYSIUM_COHORT_REQUIRED = "Please type the month and year of your cohort to continue."
 
-ELYSIUM_SUBMITTED = (
-    "✅ Thank you! Your request has been submitted for review. "
-    "We'll send your access link once it's confirmed."
-)
-
-ELYSIUM_ALREADY_PENDING = "⏳ Your request is under review. We'll notify you soon."
-ELYSIUM_ALREADY_APPROVED = "✅ You've already been confirmed for Elysium pre-2025!"
-
 ELYSIUM_APPROVED = (
-    "✅ You're confirmed! Here's your one-time invite link to the group:\n{invite_link}\n\n"
-    "This link works once and only for you — please don't share it."
+    "✅ Thank you! Here's your link to join Elysium pre-2025:\n{invite_link}\n\n"
+    "Tap it to request access — you'll be approved in the group shortly."
 )
-ELYSIUM_APPROVED_NO_LINK = (
-    "✅ You're confirmed! We'll send your group invite link shortly."
-)
-ELYSIUM_REJECTED = (
-    "Thank you for your interest. Unfortunately, your request to join "
-    "Elysium pre-2025 was not approved at this time."
-)
-
-ELYSIUM_REVIEWER_ENTRY = (
-    "📋 New Elysium pre-2025 request\n"
-    "From: <a href=\"tg://user?id={chat_id}\">{first_name}</a>{username_part}\n\n"
-    "<b>Name:</b> {full_name}\n"
-    "<b>Admissions Program cohort:</b> {cohort}"
-)
-
-BTN_ELYSIUM_APPROVE = "✅ Confirm"
-BTN_ELYSIUM_REJECT = "❌ Reject"
-
-ELYSIUM_REVIEWER_APPROVED = "✅ Confirmed. Applicant has been sent their invite link."
-ELYSIUM_REVIEWER_REJECTED = "❌ Rejected. Applicant has been notified."
-ELYSIUM_REVIEWER_ALREADY_DECIDED = "ℹ️ Decision already recorded for this request."
-ELYSIUM_REVIEWER_LINK_FAILED = (
-    "⚠️ Confirmed, but I couldn't create the invite link "
-    "(is the group set and am I an admin there?). Applicant was notified."
+ELYSIUM_ALREADY_APPROVED = (
+    "✅ You're already registered. Here's your link to join Elysium pre-2025:\n{invite_link}\n\n"
+    "Tap it to request access — you'll be approved in the group shortly."
 )
 
 ELYSIUM_SET_POST_SUCCESS = "✅ Elysium pre-2025 post saved."

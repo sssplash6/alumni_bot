@@ -39,9 +39,9 @@ _PRESENT_STATUSES = {"creator", "administrator", "member", "restricted"}
 # People who manually confirm "Join Elysium pre-2025" requests.
 ELYSIUM_CONFIRMER_CHAT_IDS: list[int] = [8836861446]
 
-# The group new Elysium members receive a one-time invite link to.
-# The bot must be an admin there with "Invite Users via Link" permission.
-ELYSIUM_GROUP_ID: int | None = -1004479515242
+# Link handed to applicants after they register. Confirmation/approval happens
+# inside the group (e.g. via join requests approved by group admins).
+ELYSIUM_GROUP_INVITE_LINK = "https://t.me/+L_mi3g_VSlk5ZGQ9"
 
 # ── State constants ────────────────────────────────────────────────────────────
 
@@ -855,10 +855,11 @@ async def elysium_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
     existing = await db.elysium_get_submission(chat_id)
     if existing and existing["status"] == "approved":
-        await update.effective_message.reply_text(msg.ELYSIUM_ALREADY_APPROVED)
-        return ConversationHandler.END
-    if existing and existing["status"] == "pending":
-        await update.effective_message.reply_text(msg.ELYSIUM_ALREADY_PENDING)
+        # Already registered — just resend their link.
+        await update.effective_message.reply_text(
+            msg.ELYSIUM_ALREADY_APPROVED.format(invite_link=ELYSIUM_GROUP_INVITE_LINK),
+            disable_web_page_preview=True,
+        )
         return ConversationHandler.END
 
     # Forward the configured post first, then start the registration questions.
@@ -905,99 +906,13 @@ async def elysium_got_cohort(update: Update, context: ContextTypes.DEFAULT_TYPE)
     username = user.username
 
     await db.elysium_save_submission(chat_id, username, first_name, full_name, cohort)
-    await update.message.reply_text(msg.ELYSIUM_SUBMITTED)
-
-    username_part = (
-        f' — <a href="https://t.me/{username}">@{username}</a>' if username else ""
+    await db.elysium_set_status(chat_id, "approved")
+    await update.message.reply_text(
+        msg.ELYSIUM_APPROVED.format(invite_link=ELYSIUM_GROUP_INVITE_LINK),
+        disable_web_page_preview=True,
     )
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton(msg.BTN_ELYSIUM_APPROVE, callback_data=f"elysium_approve:{chat_id}"),
-        InlineKeyboardButton(msg.BTN_ELYSIUM_REJECT, callback_data=f"elysium_reject:{chat_id}"),
-    ]])
-    reviewer_text = msg.ELYSIUM_REVIEWER_ENTRY.format(
-        chat_id=chat_id,
-        first_name=first_name,
-        username_part=username_part,
-        full_name=full_name,
-        cohort=cohort,
-    )
-    for confirmer_id in ELYSIUM_CONFIRMER_CHAT_IDS:
-        try:
-            sent = await context.bot.send_message(
-                chat_id=confirmer_id,
-                text=reviewer_text,
-                parse_mode="HTML",
-                reply_markup=keyboard,
-            )
-            await db.elysium_set_reviewer_message(chat_id, sent.message_id)
-        except Exception:
-            logger.exception("Failed to send Elysium request to confirmer chat_id=%d", confirmer_id)
 
     return ConversationHandler.END
-
-
-async def _elysium_create_invite_link(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> str | None:
-    """Create a single-use invite link to the Elysium group for one applicant."""
-    if ELYSIUM_GROUP_ID is None:
-        logger.error("ELYSIUM_GROUP_ID is not set; cannot create invite link")
-        return None
-    try:
-        link = await context.bot.create_chat_invite_link(
-            chat_id=ELYSIUM_GROUP_ID,
-            member_limit=1,
-            name=f"elysium-{chat_id}",
-        )
-        return link.invite_link
-    except Exception:
-        logger.exception("Failed to create Elysium invite link for chat_id=%d", chat_id)
-        return None
-
-
-async def _elysium_decision(update: Update, context: ContextTypes.DEFAULT_TYPE, decision: str) -> None:
-    query = update.callback_query
-    await query.answer()
-    if update.effective_user.id not in ELYSIUM_CONFIRMER_CHAT_IDS:
-        return
-
-    applicant_chat_id = int(query.data.split(":")[1])
-    submission = await db.elysium_get_submission(applicant_chat_id)
-    if not submission or submission["status"] != "pending":
-        await query.answer(msg.ELYSIUM_REVIEWER_ALREADY_DECIDED, show_alert=True)
-        return
-
-    base_text = query.message.text or ""
-    if decision == "approved":
-        await db.elysium_set_status(applicant_chat_id, "approved")
-        invite_link = await _elysium_create_invite_link(context, applicant_chat_id)
-        if invite_link:
-            applicant_msg = msg.ELYSIUM_APPROVED.format(invite_link=invite_link)
-            reviewer_confirmation = msg.ELYSIUM_REVIEWER_APPROVED
-        else:
-            applicant_msg = msg.ELYSIUM_APPROVED_NO_LINK
-            reviewer_confirmation = msg.ELYSIUM_REVIEWER_LINK_FAILED
-    else:
-        await db.elysium_set_status(applicant_chat_id, "rejected")
-        applicant_msg = msg.ELYSIUM_REJECTED
-        reviewer_confirmation = msg.ELYSIUM_REVIEWER_REJECTED
-
-    try:
-        await context.bot.send_message(
-            chat_id=applicant_chat_id, text=applicant_msg, disable_web_page_preview=True
-        )
-    except Exception:
-        logger.exception("Failed to notify Elysium applicant chat_id=%d", applicant_chat_id)
-
-    await query.edit_message_text(
-        text=f"{base_text}\n\n{reviewer_confirmation}", reply_markup=None
-    )
-
-
-async def elysium_approve_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await _elysium_decision(update, context, "approved")
-
-
-async def elysium_reject_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await _elysium_decision(update, context, "rejected")
 
 
 async def elysium_set_post(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1124,8 +1039,6 @@ def build_app() -> Application:
     app.add_handler(CallbackQueryHandler(apf_approve_callback, pattern=r"^apf_approve:"))
     app.add_handler(CallbackQueryHandler(apf_reject_callback, pattern=r"^apf_reject:"))
     app.add_handler(CommandHandler("elysium_set_post", elysium_set_post, filters=_private))
-    app.add_handler(CallbackQueryHandler(elysium_approve_callback, pattern=r"^elysium_approve:"))
-    app.add_handler(CallbackQueryHandler(elysium_reject_callback, pattern=r"^elysium_reject:"))
     app.add_handler(CommandHandler("open", admin_open, filters=_private))
     app.add_handler(CommandHandler("close", admin_close, filters=_private))
     app.add_handler(CommandHandler("status", admin_status, filters=_private))
