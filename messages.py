@@ -316,3 +316,7 @@ ELYSIUM_SET_POST_SUCCESS = "✅ Elysium pre-2025 post saved."
 ELYSIUM_SET_POST_USAGE = (
     "Reply to any message with /elysium_set_post to save it as the Elysium post."
 )
+
+ELYSIUM_LIST_EMPTY = "No Elysium pre-2025 submissions yet."
+ELYSIUM_LIST_HEADER = "📋 Elysium pre-2025 submissions ({count}):"
+ELYSIUM_LIST_ENTRY = "{idx}. {full_name} — {cohort}{username_part}"

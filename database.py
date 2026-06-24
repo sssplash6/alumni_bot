@@ -467,3 +467,13 @@ async def elysium_get_by_status(statuses: list[str]) -> list[dict]:
         ) as cur:
             rows = await cur.fetchall()
     return [dict(r) for r in rows]
+
+
+async def elysium_get_all() -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM elysium_submissions ORDER BY created_at"
+        ) as cur:
+            rows = await cur.fetchall()
+    return [dict(r) for r in rows]

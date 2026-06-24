@@ -927,6 +927,25 @@ async def elysium_set_post(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await update.message.reply_text(msg.ELYSIUM_SET_POST_SUCCESS)
 
 
+async def elysium_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_user.id not in ELYSIUM_CONFIRMER_CHAT_IDS + ADMIN_IDS:
+        return
+    submissions = await db.elysium_get_all()
+    if not submissions:
+        await update.message.reply_text(msg.ELYSIUM_LIST_EMPTY)
+        return
+    lines = [msg.ELYSIUM_LIST_HEADER.format(count=len(submissions))]
+    for idx, sub in enumerate(submissions, start=1):
+        username_part = f" (@{sub['username']})" if sub.get("username") else ""
+        lines.append(msg.ELYSIUM_LIST_ENTRY.format(
+            idx=idx,
+            full_name=sub["full_name"],
+            cohort=sub["cohort"],
+            username_part=username_part,
+        ))
+    await update.message.reply_text("\n".join(lines))
+
+
 # ── App builder ────────────────────────────────────────────────────────────────
 
 def build_app() -> Application:
@@ -1039,6 +1058,7 @@ def build_app() -> Application:
     app.add_handler(CallbackQueryHandler(apf_approve_callback, pattern=r"^apf_approve:"))
     app.add_handler(CallbackQueryHandler(apf_reject_callback, pattern=r"^apf_reject:"))
     app.add_handler(CommandHandler("elysium_set_post", elysium_set_post, filters=_private))
+    app.add_handler(CommandHandler("elysium_list", elysium_list, filters=_private))
     app.add_handler(CommandHandler("open", admin_open, filters=_private))
     app.add_handler(CommandHandler("close", admin_close, filters=_private))
     app.add_handler(CommandHandler("status", admin_status, filters=_private))
