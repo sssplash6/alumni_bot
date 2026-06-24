@@ -304,11 +304,15 @@ ELYSIUM_NAME_REQUIRED = "Please type your full name to continue."
 ELYSIUM_COHORT_REQUIRED = "Please type the month and year of your cohort to continue."
 
 ELYSIUM_APPROVED = (
-    "✅ Thank you! Here's your link to join Elysium pre-2025:\n{invite_link}\n\n"
+    "✅ Thank you! Here's your link to join Elysium:\n{invite_link}\n\n"
+    "⚠️ Please note: this space is reserved <b>exclusively for pre-2025 students</b>. "
+    "Access is granted on that basis, so kindly don't share the link with others.\n\n"
     "Tap it to request access — you'll be approved in the group shortly."
 )
 ELYSIUM_ALREADY_APPROVED = (
-    "✅ You're already registered. Here's your link to join Elysium pre-2025:\n{invite_link}\n\n"
+    "✅ You're already registered. Here's your link to join Elysium:\n{invite_link}\n\n"
+    "⚠️ Please note: this space is reserved <b>exclusively for pre-2025 students</b>. "
+    "Access is granted on that basis, so kindly don't share the link with others.\n\n"
     "Tap it to request access — you'll be approved in the group shortly."
 )
 

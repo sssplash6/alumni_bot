@@ -858,6 +858,7 @@ async def elysium_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         # Already registered — just resend their link.
         await update.effective_message.reply_text(
             msg.ELYSIUM_ALREADY_APPROVED.format(invite_link=ELYSIUM_GROUP_INVITE_LINK),
+            parse_mode="HTML",
             disable_web_page_preview=True,
         )
         return ConversationHandler.END
@@ -909,6 +910,7 @@ async def elysium_got_cohort(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await db.elysium_set_status(chat_id, "approved")
     await update.message.reply_text(
         msg.ELYSIUM_APPROVED.format(invite_link=ELYSIUM_GROUP_INVITE_LINK),
+        parse_mode="HTML",
         disable_web_page_preview=True,
     )
 
