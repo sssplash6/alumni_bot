@@ -231,7 +231,7 @@ BTN_MENTEE = "🙋 Register as Mentee"
 
 # ── Admissions Program Fair ───────────────────────────────────────────────────
 
-BTN_APF = "🎓 Admissions Program Fair"
+BTN_APF = "🎓 Access Elysium Fair"
 
 APF_INTRO = (
     "🎓 <b>Admissions Program Fair</b>\n\n"
