@@ -40,8 +40,8 @@ _PRESENT_STATUSES = {"creator", "administrator", "member", "restricted"}
 ELYSIUM_CONFIRMER_CHAT_IDS: list[int] = [310366883]
 
 # The group new Elysium members receive a one-time invite link to.
-# TODO: set once the group is created and the bot is added as an admin there.
-ELYSIUM_GROUP_ID: int | None = None
+# The bot must be an admin there with "Invite Users via Link" permission.
+ELYSIUM_GROUP_ID: int | None = -1004479515242
 
 # ── State constants ────────────────────────────────────────────────────────────
 
