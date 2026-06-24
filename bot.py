@@ -37,7 +37,7 @@ ELIGIBILITY_GROUP_IDS: list[int] = [-1001308713514, -1004219790871]
 _PRESENT_STATUSES = {"creator", "administrator", "member", "restricted"}
 
 # People who manually confirm "Join Elysium pre-2025" requests.
-ELYSIUM_CONFIRMER_CHAT_IDS: list[int] = [310366883]
+ELYSIUM_CONFIRMER_CHAT_IDS: list[int] = [8836861446]
 
 # The group new Elysium members receive a one-time invite link to.
 # The bot must be an admin there with "Invite Users via Link" permission.
