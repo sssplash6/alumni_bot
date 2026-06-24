@@ -36,6 +36,13 @@ ELIGIBILITY_GROUP_IDS: list[int] = [-1001308713514, -1004219790871]
 # Telegram chat-member statuses that count as "currently in the group".
 _PRESENT_STATUSES = {"creator", "administrator", "member", "restricted"}
 
+# People who manually confirm "Join Elysium pre-2025" requests.
+ELYSIUM_CONFIRMER_CHAT_IDS: list[int] = [310366883]
+
+# The group new Elysium members receive a one-time invite link to.
+# TODO: set once the group is created and the bot is added as an admin there.
+ELYSIUM_GROUP_ID: int | None = None
+
 # ── State constants ────────────────────────────────────────────────────────────
 
 (
@@ -63,6 +70,11 @@ _PRESENT_STATUSES = {"creator", "administrator", "member", "restricted"}
     APF_NAME,
     APF_COHORT,
 ) = range(15, 17)
+
+(
+    ELYSIUM_NAME,
+    ELYSIUM_COHORT,
+) = range(17, 19)
 
 
 # ── Keyboard helpers ──────────────────────────────────────────────────────────
@@ -110,10 +122,10 @@ def _main_kb(is_open: bool) -> ReplyKeyboardMarkup:
     if is_open:
         rows = [
             [KeyboardButton(msg.BTN_MENTOR), KeyboardButton(msg.BTN_MENTEE)],
-            [KeyboardButton(msg.BTN_APF)],
+            [KeyboardButton(msg.BTN_ELYSIUM)],
         ]
     else:
-        rows = [[KeyboardButton(msg.BTN_APF)]]
+        rows = [[KeyboardButton(msg.BTN_ELYSIUM)]]
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 
@@ -123,20 +135,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         msg.START_OPEN if is_open else msg.START_CLOSED,
         reply_markup=_main_kb(is_open),
     )
-
-
-async def leave_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Immediately leave any group or supergroup the bot is added to.
-
-    This bot only operates in private chats; it has no group features."""
-    chat = update.effective_chat
-    if chat is None:
-        return
-    logger.info("Leaving group chat %s (%s)", chat.id, chat.title)
-    try:
-        await context.bot.leave_chat(chat.id)
-    except Exception:
-        logger.exception("Failed to leave chat %s", chat.id)
 
 
 # ── Mentor flow ───────────────────────────────────────────────────────────────
@@ -848,6 +846,170 @@ async def apf_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("\n".join(lines))
 
 
+# ── Elysium pre-2025 ────────────────────────────────────────────────────────────
+
+async def elysium_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.callback_query:
+        await update.callback_query.answer()
+    chat_id = update.effective_chat.id
+
+    existing = await db.elysium_get_submission(chat_id)
+    if existing and existing["status"] == "approved":
+        await update.effective_message.reply_text(msg.ELYSIUM_ALREADY_APPROVED)
+        return ConversationHandler.END
+    if existing and existing["status"] == "pending":
+        await update.effective_message.reply_text(msg.ELYSIUM_ALREADY_PENDING)
+        return ConversationHandler.END
+
+    # Forward the configured post first, then start the registration questions.
+    post_chat_id = await db.get_setting("elysium_post_chat_id")
+    post_message_id = await db.get_setting("elysium_post_message_id")
+    if post_chat_id and post_message_id:
+        try:
+            await context.bot.copy_message(
+                chat_id=chat_id,
+                from_chat_id=int(post_chat_id),
+                message_id=int(post_message_id),
+            )
+        except Exception:
+            logger.exception("Failed to forward Elysium post to chat_id=%d", chat_id)
+            await update.effective_message.reply_text(msg.ELYSIUM_INTRO, parse_mode="HTML")
+    else:
+        await update.effective_message.reply_text(msg.ELYSIUM_INTRO, parse_mode="HTML")
+
+    context.user_data.clear()
+    await update.effective_message.reply_text(msg.ELYSIUM_ASK_NAME)
+    return ELYSIUM_NAME
+
+
+async def elysium_got_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    name = update.message.text.strip()
+    if not name:
+        await update.message.reply_text(msg.ELYSIUM_NAME_REQUIRED)
+        return ELYSIUM_NAME
+    context.user_data["elysium_full_name"] = name
+    await update.message.reply_text(msg.ELYSIUM_ASK_COHORT)
+    return ELYSIUM_COHORT
+
+
+async def elysium_got_cohort(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    cohort = update.message.text.strip()
+    if not cohort:
+        await update.message.reply_text(msg.ELYSIUM_COHORT_REQUIRED)
+        return ELYSIUM_COHORT
+
+    chat_id = update.effective_chat.id
+    full_name = context.user_data.get("elysium_full_name", "")
+    user = update.effective_user
+    first_name = user.first_name or "Unknown"
+    username = user.username
+
+    await db.elysium_save_submission(chat_id, username, first_name, full_name, cohort)
+    await update.message.reply_text(msg.ELYSIUM_SUBMITTED)
+
+    username_part = f" (@{username})" if username else ""
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton(msg.BTN_ELYSIUM_APPROVE, callback_data=f"elysium_approve:{chat_id}"),
+        InlineKeyboardButton(msg.BTN_ELYSIUM_REJECT, callback_data=f"elysium_reject:{chat_id}"),
+    ]])
+    reviewer_text = msg.ELYSIUM_REVIEWER_ENTRY.format(
+        chat_id=chat_id,
+        first_name=first_name,
+        username_part=username_part,
+        full_name=full_name,
+        cohort=cohort,
+    )
+    for confirmer_id in ELYSIUM_CONFIRMER_CHAT_IDS:
+        try:
+            sent = await context.bot.send_message(
+                chat_id=confirmer_id,
+                text=reviewer_text,
+                parse_mode="HTML",
+                reply_markup=keyboard,
+            )
+            await db.elysium_set_reviewer_message(chat_id, sent.message_id)
+        except Exception:
+            logger.exception("Failed to send Elysium request to confirmer chat_id=%d", confirmer_id)
+
+    return ConversationHandler.END
+
+
+async def _elysium_create_invite_link(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> str | None:
+    """Create a single-use invite link to the Elysium group for one applicant."""
+    if ELYSIUM_GROUP_ID is None:
+        logger.error("ELYSIUM_GROUP_ID is not set; cannot create invite link")
+        return None
+    try:
+        link = await context.bot.create_chat_invite_link(
+            chat_id=ELYSIUM_GROUP_ID,
+            member_limit=1,
+            name=f"elysium-{chat_id}",
+        )
+        return link.invite_link
+    except Exception:
+        logger.exception("Failed to create Elysium invite link for chat_id=%d", chat_id)
+        return None
+
+
+async def _elysium_decision(update: Update, context: ContextTypes.DEFAULT_TYPE, decision: str) -> None:
+    query = update.callback_query
+    await query.answer()
+    if update.effective_user.id not in ELYSIUM_CONFIRMER_CHAT_IDS:
+        return
+
+    applicant_chat_id = int(query.data.split(":")[1])
+    submission = await db.elysium_get_submission(applicant_chat_id)
+    if not submission or submission["status"] != "pending":
+        await query.answer(msg.ELYSIUM_REVIEWER_ALREADY_DECIDED, show_alert=True)
+        return
+
+    base_text = query.message.text or ""
+    if decision == "approved":
+        await db.elysium_set_status(applicant_chat_id, "approved")
+        invite_link = await _elysium_create_invite_link(context, applicant_chat_id)
+        if invite_link:
+            applicant_msg = msg.ELYSIUM_APPROVED.format(invite_link=invite_link)
+            reviewer_confirmation = msg.ELYSIUM_REVIEWER_APPROVED
+        else:
+            applicant_msg = msg.ELYSIUM_APPROVED_NO_LINK
+            reviewer_confirmation = msg.ELYSIUM_REVIEWER_LINK_FAILED
+    else:
+        await db.elysium_set_status(applicant_chat_id, "rejected")
+        applicant_msg = msg.ELYSIUM_REJECTED
+        reviewer_confirmation = msg.ELYSIUM_REVIEWER_REJECTED
+
+    try:
+        await context.bot.send_message(
+            chat_id=applicant_chat_id, text=applicant_msg, disable_web_page_preview=True
+        )
+    except Exception:
+        logger.exception("Failed to notify Elysium applicant chat_id=%d", applicant_chat_id)
+
+    await query.edit_message_text(
+        text=f"{base_text}\n\n{reviewer_confirmation}", reply_markup=None
+    )
+
+
+async def elysium_approve_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _elysium_decision(update, context, "approved")
+
+
+async def elysium_reject_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _elysium_decision(update, context, "rejected")
+
+
+async def elysium_set_post(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_user.id not in ELYSIUM_CONFIRMER_CHAT_IDS:
+        return
+    reply = update.message.reply_to_message
+    if not reply:
+        await update.message.reply_text(msg.ELYSIUM_SET_POST_USAGE)
+        return
+    await db.set_setting("elysium_post_chat_id", str(reply.chat.id))
+    await db.set_setting("elysium_post_message_id", str(reply.message_id))
+    await update.message.reply_text(msg.ELYSIUM_SET_POST_SUCCESS)
+
+
 # ── App builder ────────────────────────────────────────────────────────────────
 
 def build_app() -> Application:
@@ -936,22 +1098,32 @@ def build_app() -> Application:
         per_message=False,
     )
 
-    # Leave any group/supergroup the bot is added to — it's private-chat only.
-    app.add_handler(
-        MessageHandler(
-            filters.StatusUpdate.NEW_CHAT_MEMBERS | filters.ChatType.GROUPS,
-            leave_group,
-        )
+    elysium_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("elysium", elysium_start, filters=_private),
+            MessageHandler(_private & filters.Text([msg.BTN_ELYSIUM]), elysium_start),
+            CallbackQueryHandler(elysium_start, pattern=r"^start:elysium$"),
+        ],
+        states={
+            ELYSIUM_NAME: [MessageHandler(_private & filters.TEXT & ~filters.COMMAND, elysium_got_name)],
+            ELYSIUM_COHORT: [MessageHandler(_private & filters.TEXT & ~filters.COMMAND, elysium_got_cohort)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel, filters=_private)],
+        per_message=False,
     )
 
     app.add_handler(CommandHandler("start", start, filters=_private))
     app.add_handler(mentor_conv)
     app.add_handler(mentee_conv)
     app.add_handler(apf_conv)
+    app.add_handler(elysium_conv)
     app.add_handler(CommandHandler("apf_set_post", apf_set_post, filters=_private))
     app.add_handler(CommandHandler("apf_list", apf_list, filters=_private))
     app.add_handler(CallbackQueryHandler(apf_approve_callback, pattern=r"^apf_approve:"))
     app.add_handler(CallbackQueryHandler(apf_reject_callback, pattern=r"^apf_reject:"))
+    app.add_handler(CommandHandler("elysium_set_post", elysium_set_post, filters=_private))
+    app.add_handler(CallbackQueryHandler(elysium_approve_callback, pattern=r"^elysium_approve:"))
+    app.add_handler(CallbackQueryHandler(elysium_reject_callback, pattern=r"^elysium_reject:"))
     app.add_handler(CommandHandler("open", admin_open, filters=_private))
     app.add_handler(CommandHandler("close", admin_close, filters=_private))
     app.add_handler(CommandHandler("status", admin_status, filters=_private))
