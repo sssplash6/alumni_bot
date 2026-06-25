@@ -234,9 +234,13 @@ BTN_MENTEE = "🙋 Register as Mentee"
 BTN_APF = "🎓 Access Elysium Fair"
 
 APF_INTRO = (
-    "🎓 <b>Admissions Program Fair</b>\n\n"
-    "Register below to join. Please answer the two short questions that follow — "
-    "our team will confirm your spot shortly."
+    "👋 <b>Welcome to the Elysium Admissions Fair 2026!</b>\n\n"
+    "We're so glad you're here. This event brings together Elysium alumni to "
+    "celebrate the paths you've taken and inspire the ones ahead.\n\n"
+    "📅 July 1, 2026 — hybrid format (Tashkent + online)\n\n"
+    "If you are an Elysium member, you're approved automatically. Just complete "
+    "the registration below to secure your spot and join the fair group.\n\n"
+    "See you there! 🎓"
 )
 
 APF_ASK_NAME = "What's your full name?"
