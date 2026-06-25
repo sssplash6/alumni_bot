@@ -31,7 +31,16 @@ APF_REVIEWER_CHAT_IDS: list[int] = [7185151344]
 
 # Groups the bot belongs to as a member. Elysium Fair registrants are
 # auto-approved if they belong to at least one of these, else auto-rejected.
-ELIGIBILITY_GROUP_IDS: list[int] = [-1001308713514, -1004219790871]
+ELIGIBILITY_GROUP_IDS: list[int] = [
+    -1002821462310,
+    -1004479515242,
+    -1003735467341,
+]
+
+# The Admissions Program / Elysium Fair group itself. The bot is an admin here,
+# so it can mint single-use invite links for approved registrants. Membership in
+# this group also counts as eligible (they're obviously already in Elysium).
+APF_FAIR_GROUP_ID: int = -1003712688053
 
 # Telegram chat-member statuses that count as "currently in the group".
 _PRESENT_STATUSES = {"creator", "administrator", "member", "restricted"}
@@ -122,10 +131,14 @@ def _main_kb(is_open: bool) -> ReplyKeyboardMarkup:
     if is_open:
         rows = [
             [KeyboardButton(msg.BTN_MENTOR), KeyboardButton(msg.BTN_MENTEE)],
+            [KeyboardButton(msg.BTN_APF)],
             [KeyboardButton(msg.BTN_ELYSIUM)],
         ]
     else:
-        rows = [[KeyboardButton(msg.BTN_ELYSIUM)]]
+        rows = [
+            [KeyboardButton(msg.BTN_APF)],
+            [KeyboardButton(msg.BTN_ELYSIUM)],
+        ]
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 
@@ -670,7 +683,7 @@ async def admin_match(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 async def _is_eligibility_group_member(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
     """True if the user currently belongs to at least one eligibility group."""
-    for group_id in ELIGIBILITY_GROUP_IDS:
+    for group_id in (*ELIGIBILITY_GROUP_IDS, APF_FAIR_GROUP_ID):
         try:
             member = await context.bot.get_chat_member(chat_id=group_id, user_id=user_id)
         except Exception:
@@ -683,6 +696,20 @@ async def _is_eligibility_group_member(context: ContextTypes.DEFAULT_TYPE, user_
     return False
 
 
+async def _create_fair_invite_link(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> str | None:
+    """Mint a single-use invite link to the fair group, or None on failure."""
+    try:
+        invite = await context.bot.create_chat_invite_link(
+            chat_id=APF_FAIR_GROUP_ID,
+            name=f"Fair {user_id}"[:32],
+            member_limit=1,
+        )
+        return invite.invite_link
+    except Exception:
+        logger.exception("Failed to create fair invite link for user_id=%d", user_id)
+        return None
+
+
 async def apf_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if update.callback_query:
         await update.callback_query.answer()
@@ -690,7 +717,15 @@ async def apf_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     existing = await db.apf_get_submission(chat_id)
     if existing and existing["status"] == "approved":
-        await update.effective_message.reply_text(msg.APF_ALREADY_APPROVED)
+        invite_link = await _create_fair_invite_link(context, chat_id)
+        if invite_link:
+            await update.effective_message.reply_text(
+                msg.APF_ALREADY_APPROVED.format(invite_link=invite_link),
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+        else:
+            await update.effective_message.reply_text(msg.APF_ALREADY_APPROVED_NO_LINK)
         return ConversationHandler.END
     if existing and existing["status"] == "pending":
         await update.effective_message.reply_text(msg.APF_ALREADY_PENDING)
@@ -746,7 +781,15 @@ async def apf_got_cohort(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     is_member = await _is_eligibility_group_member(context, chat_id)
     if is_member:
         await db.apf_set_status(chat_id, "approved")
-        await update.message.reply_text(msg.APF_APPROVED)
+        invite_link = await _create_fair_invite_link(context, chat_id)
+        if invite_link:
+            await update.message.reply_text(
+                msg.APF_APPROVED.format(invite_link=invite_link),
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+        else:
+            await update.message.reply_text(msg.APF_APPROVED_NO_LINK)
         reviewer_status = msg.APF_REVIEWER_AUTO_APPROVED
     else:
         await db.apf_set_status(chat_id, "rejected")
@@ -788,9 +831,15 @@ async def _apf_decision(update: Update, context: ContextTypes.DEFAULT_TYPE, deci
         return
 
     base_text = query.message.text or ""
+    send_kwargs: dict = {}
     if decision == "approved":
         await db.apf_set_status(applicant_chat_id, "approved")
-        applicant_msg = msg.APF_APPROVED
+        invite_link = await _create_fair_invite_link(context, applicant_chat_id)
+        if invite_link:
+            applicant_msg = msg.APF_APPROVED.format(invite_link=invite_link)
+            send_kwargs = {"parse_mode": "HTML", "disable_web_page_preview": True}
+        else:
+            applicant_msg = msg.APF_APPROVED_NO_LINK
         reviewer_confirmation = msg.APF_REVIEWER_APPROVED
     else:
         await db.apf_set_status(applicant_chat_id, "rejected")
@@ -798,7 +847,9 @@ async def _apf_decision(update: Update, context: ContextTypes.DEFAULT_TYPE, deci
         reviewer_confirmation = msg.APF_REVIEWER_REJECTED
 
     try:
-        await context.bot.send_message(chat_id=applicant_chat_id, text=applicant_msg)
+        await context.bot.send_message(
+            chat_id=applicant_chat_id, text=applicant_msg, **send_kwargs
+        )
     except Exception:
         logger.exception("Failed to notify APF applicant chat_id=%d", applicant_chat_id)
 

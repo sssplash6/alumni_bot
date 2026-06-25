@@ -254,12 +254,29 @@ APF_SUBMITTED = (
 )
 
 APF_ALREADY_PENDING = "⏳ Your registration is under review. We'll notify you soon."
-APF_ALREADY_APPROVED = "✅ You're already registered for the Admissions Program Fair!"
+APF_ALREADY_APPROVED = (
+    "✅ You're already registered for the Admissions Program Fair!\n\n"
+    "Here's your personal join link:\n{invite_link}\n\n"
+    "<i>This link is single-use and just for you — please don't share it.</i>"
+)
+APF_ALREADY_APPROVED_NO_LINK = (
+    "✅ You're already registered for the Admissions Program Fair! "
+    "We couldn't generate your join link right now — please try again shortly."
+)
 
-APF_APPROVED = "✅ You're confirmed for the Admissions Program Fair! See you there."
+APF_APPROVED = (
+    "✅ You're confirmed for the Admissions Program Fair!\n\n"
+    "Tap your personal join link to enter the group:\n{invite_link}\n\n"
+    "<i>This link is single-use and just for you — please don't share it.</i>"
+)
+APF_APPROVED_NO_LINK = (
+    "✅ You're confirmed for the Admissions Program Fair! "
+    "We couldn't generate your join link right now — please try again shortly."
+)
 APF_REJECTED = (
-    "Thank you for registering. Unfortunately, your Admissions Program Fair "
-    "registration was not approved at this time."
+    "The Admissions Program Fair is exclusive to Elysium, and we couldn't "
+    "confirm that you're part of Elysium. If you believe this is a mistake, "
+    "please reach out to the team."
 )
 
 APF_REVIEWER_ENTRY = (
