@@ -778,6 +778,8 @@ async def apf_got_cohort(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # Auto-decide based on membership in the eligibility groups: a member of at
     # least one group is approved, everyone else is rejected. No manual review.
+    # Approved submissions stay in the DB (status "approved") and are viewable
+    # via /apf_list — that's the confirmed-participants list.
     is_member = await _is_eligibility_group_member(context, chat_id)
     if is_member:
         await db.apf_set_status(chat_id, "approved")
@@ -790,30 +792,9 @@ async def apf_got_cohort(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             )
         else:
             await update.message.reply_text(msg.APF_APPROVED_NO_LINK)
-        reviewer_status = msg.APF_REVIEWER_AUTO_APPROVED
     else:
         await db.apf_set_status(chat_id, "rejected")
         await update.message.reply_text(msg.APF_REJECTED)
-        reviewer_status = msg.APF_REVIEWER_AUTO_REJECTED
-
-    username_part = f" (@{username})" if username else ""
-    reviewer_text = msg.APF_REVIEWER_ENTRY.format(
-        chat_id=chat_id,
-        first_name=first_name,
-        username_part=username_part,
-        full_name=full_name,
-        cohort=cohort,
-    )
-    reviewer_text = f"{reviewer_text}\n\n{reviewer_status}"
-    for reviewer_id in APF_REVIEWER_CHAT_IDS:
-        try:
-            await context.bot.send_message(
-                chat_id=reviewer_id,
-                text=reviewer_text,
-                parse_mode="HTML",
-            )
-        except Exception:
-            logger.exception("Failed to send APF registration to reviewer chat_id=%d", reviewer_id)
 
     return ConversationHandler.END
 
