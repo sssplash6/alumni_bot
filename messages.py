@@ -304,7 +304,7 @@ APF_LIST_ENTRY = "{idx}. {full_name} — {cohort}{username_part}"
 
 # ── Elysium pre-2025 ──────────────────────────────────────────────────────────
 
-BTN_ELYSIUM = "Join Elysium pre-2025"
+BTN_ELYSIUM = "Join Elysium pre-2025 cohorts"
 
 ELYSIUM_INTRO = (
     "<b>Join Elysium pre-2025</b>\n\n"
