@@ -322,14 +322,16 @@ ELYSIUM_COHORT_REQUIRED = "Please type the month and year of your cohort to cont
 
 ELYSIUM_APPROVED = (
     "✅ Thank you! Here's your link to join Elysium:\n{invite_link}\n\n"
-    "⚠️ Please note: this space is reserved <b>exclusively for pre-2025 students</b>. "
-    "Access is granted on that basis, so kindly don't share the link with others.\n\n"
+    "⚠️ Please note: This group is specifically for alumni from these three cohorts.\n\n"
+    "✅ 2022\n✅ 2023\n✅ 2024\n\n"
+    "Students from the 2025 and 2026 cohorts are already connected through their own respective groups.\n\n"
     "Tap it to request access — you'll be approved in the group shortly."
 )
 ELYSIUM_ALREADY_APPROVED = (
     "✅ You're already registered. Here's your link to join Elysium:\n{invite_link}\n\n"
-    "⚠️ Please note: this space is reserved <b>exclusively for pre-2025 students</b>. "
-    "Access is granted on that basis, so kindly don't share the link with others.\n\n"
+    "⚠️ Please note: This group is specifically for alumni from these three cohorts.\n\n"
+    "✅ 2022\n✅ 2023\n✅ 2024\n\n"
+    "Students from the 2025 and 2026 cohorts are already connected through their own respective groups.\n\n"
     "Tap it to request access — you'll be approved in the group shortly."
 )
 
