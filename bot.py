@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 # Hard-fixed reviewers who receive Admissions Program Fair registrations and
 # can approve/reject them. Carried over from the freshbot.
-APF_REVIEWER_CHAT_IDS: list[int] = [7185151344]
+APF_REVIEWER_CHAT_IDS: list[int] = [7185151344, 310366883, 8836861446, 7926199790]
 
 # Groups the bot belongs to as a member. Elysium Fair registrants are
 # auto-approved if they belong to at least one of these, else auto-rejected.
