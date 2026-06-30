@@ -231,7 +231,7 @@ BTN_MENTEE = "🙋 Register as Mentee"
 
 # ── Admissions Program Fair ───────────────────────────────────────────────────
 
-BTN_APF = "🎓 Access Elysium Fair"
+BTN_APF = "🎓 Admissions Program Fair"
 
 APF_INTRO = (
     "👋 <b>Welcome to the Elysium Admissions Fair 2026!</b>\n\n"
@@ -308,7 +308,7 @@ APF_LIST_ENTRY = "{idx}. {full_name} — {cohort}{username_part}"
 
 # ── Elysium pre-2025 ──────────────────────────────────────────────────────────
 
-BTN_ELYSIUM = "Join Elysium pre-2025 cohorts"
+BTN_ELYSIUM = "Admissions Program Alumni Group (pre-2025)"
 
 ELYSIUM_INTRO = (
     "<b>Join Elysium pre-2025</b>\n\n"
