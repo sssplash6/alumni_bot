@@ -1,4 +1,5 @@
 # bot.py
+import html
 import logging
 
 from telegram import (
@@ -11,6 +12,7 @@ from telegram import (
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
+    ChatMemberHandler,
     CommandHandler,
     ConversationHandler,
     ContextTypes,
@@ -52,6 +54,29 @@ ELYSIUM_CONFIRMER_CHAT_IDS: list[int] = [8836861446]
 # inside the group (e.g. via join requests approved by group admins).
 ELYSIUM_GROUP_INVITE_LINK = "https://t.me/+L_mi3g_VSlk5ZGQ9"
 
+# ── Alumni Gate ──────────────────────────────────────────────────────────────────
+# The one alumni group everyone in the monitored groups should end up in. The
+# bot must be an ADMIN here (to read membership and mint invite links).
+# Leave as 0 until you know the ID — the gate stays dormant while it's 0.
+# Tip: forward a message from the group to @userinfobot, or reuse an ID you
+# already have above (e.g. APF_FAIR_GROUP_ID) if that's your alumni group.
+ALUMNI_GATE_GROUP_ID: int = 0  # TODO: set to the alumni group's chat ID
+
+# Groups the bot watches for non-members. The bot must be an ADMIN in each so it
+# receives join events and (with privacy mode off) sees messages. Fill these in.
+ALUMNI_GATE_MONITORED_GROUP_IDS: list[int] = [
+    # -1002821462310,
+    # -1004479515242,
+]
+
+# Deep-link payload: the group nudge button opens the bot with /start <payload>.
+ALUMNI_GATE_PAYLOAD = "alumni"
+
+# Master switch. While False the button and background detection are dormant:
+# tapping the button just says "coming soon". Flip to True (and set the group
+# IDs above) to go live.
+ALUMNI_GATE_LIVE: bool = False
+
 # ── State constants ────────────────────────────────────────────────────────────
 
 (
@@ -84,6 +109,8 @@ ELYSIUM_GROUP_INVITE_LINK = "https://t.me/+L_mi3g_VSlk5ZGQ9"
     ELYSIUM_NAME,
     ELYSIUM_COHORT,
 ) = range(17, 19)
+
+(GATE_NAME,) = range(19, 20)
 
 
 # ── Keyboard helpers ──────────────────────────────────────────────────────────
@@ -133,16 +160,30 @@ def _main_kb(is_open: bool) -> ReplyKeyboardMarkup:
             [KeyboardButton(msg.BTN_MENTOR), KeyboardButton(msg.BTN_MENTEE)],
             [KeyboardButton(msg.BTN_APF)],
             [KeyboardButton(msg.BTN_ELYSIUM)],
+            [KeyboardButton(msg.BTN_ALUMNI_GATE)],
         ]
     else:
         rows = [
             [KeyboardButton(msg.BTN_APF)],
             [KeyboardButton(msg.BTN_ELYSIUM)],
+            [KeyboardButton(msg.BTN_ALUMNI_GATE)],
         ]
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # Arriving via the group nudge deep link (/start alumni): show an intro with
+    # a button that enters the Alumni Gate conversation.
+    if context.args and context.args[0] == ALUMNI_GATE_PAYLOAD:
+        await update.message.reply_text(
+            msg.GATE_DEEPLINK_INTRO,
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton(msg.BTN_ALUMNI_GATE, callback_data="start:alumnigate")]]
+            ),
+        )
+        return
+
     is_open = await db.is_applications_open()
     await update.message.reply_text(
         msg.START_OPEN if is_open else msg.START_CLOSED,
@@ -980,6 +1021,186 @@ async def elysium_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text("\n".join(lines))
 
 
+# ── Alumni Gate ──────────────────────────────────────────────────────────────────
+# Nudges people in the monitored groups into the one alumni group. Because the
+# Bot API can't enumerate a group's roster, it works event-driven: on join or on
+# a person's first message it checks their alumni membership and, if missing,
+# tags them once with a button that brings them here to register.
+
+async def _is_gate_member(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
+    """True if the user is currently in the alumni group.
+
+    A non-member usually makes get_chat_member raise or return status 'left';
+    both mean "not a member". A real failure (e.g. the bot isn't admin in the
+    alumni group) also lands here — logged, treated as non-member, so setup
+    problems surface as over-nudging rather than silent success.
+    """
+    try:
+        member = await context.bot.get_chat_member(ALUMNI_GATE_GROUP_ID, user_id)
+    except Exception:
+        logger.debug("gate get_chat_member failed for user %d", user_id)
+        return False
+    return member.status in _PRESENT_STATUSES
+
+
+async def _create_gate_invite_link(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> str | None:
+    """Mint a single-use invite link to the alumni group, or None on failure."""
+    try:
+        invite = await context.bot.create_chat_invite_link(
+            chat_id=ALUMNI_GATE_GROUP_ID,
+            name=f"Alumni {user_id}"[:32],
+            member_limit=1,
+        )
+        return invite.invite_link
+    except Exception:
+        logger.exception("Failed to create alumni-gate invite link for user %d", user_id)
+        return None
+
+
+def _gate_mention(user_id: int, first_name: str | None) -> str:
+    """HTML text-mention that pings the user even without a username."""
+    name = html.escape(first_name or "there")
+    return f'<a href="tg://user?id={user_id}">{name}</a>'
+
+
+async def _gate_process_user(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user) -> None:
+    """Check one user against the alumni group and nudge them once if missing.
+
+    Anyone already classified (member / nudged / registered) is skipped — this
+    enforces "nudge once, ever" and caches the membership lookup.
+    """
+    if user is None or user.is_bot:
+        return
+    if not ALUMNI_GATE_LIVE or ALUMNI_GATE_GROUP_ID == 0:
+        return  # dormant / not configured yet
+
+    existing = await db.gate_get_user(user.id)
+    if existing is not None:
+        return
+
+    if await _is_gate_member(context, user.id):
+        await db.gate_mark_member(user.id, user.username, user.first_name)
+        return
+
+    url = f"https://t.me/{context.bot.username}?start={ALUMNI_GATE_PAYLOAD}"
+    button = InlineKeyboardButton(msg.GATE_GROUP_NUDGE_BUTTON, url=url)
+    try:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=msg.GATE_GROUP_NUDGE.format(mention=_gate_mention(user.id, user.first_name)),
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([[button]]),
+            disable_web_page_preview=True,
+        )
+    except Exception:
+        logger.exception("Failed to post gate nudge for user %d in chat %d", user.id, chat_id)
+        return
+
+    await db.gate_mark_nudged(user.id, user.username, user.first_name)
+    logger.info("Gate-nudged user %d (@%s) in chat %d", user.id, user.username, chat_id)
+
+
+async def gate_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Entry point of the alumni-gate registration conversation."""
+    if update.callback_query:
+        await update.callback_query.answer()
+    user = update.effective_user
+
+    if not ALUMNI_GATE_LIVE:
+        await update.effective_message.reply_text(msg.GATE_COMING_SOON, parse_mode="HTML")
+        return ConversationHandler.END
+
+    if ALUMNI_GATE_GROUP_ID == 0:
+        await update.effective_message.reply_text(msg.GATE_NOT_CONFIGURED, parse_mode="HTML")
+        return ConversationHandler.END
+
+    if await _is_gate_member(context, user.id):
+        await db.gate_mark_member(user.id, user.username, user.first_name)
+        await update.effective_message.reply_text(msg.GATE_ALREADY_MEMBER, parse_mode="HTML")
+        return ConversationHandler.END
+
+    context.user_data.clear()
+    await update.effective_message.reply_text(msg.GATE_ASK_NAME, parse_mode="HTML")
+    return GATE_NAME
+
+
+async def gate_got_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Store the full name, mint the one-time link, and hand it over."""
+    full_name = update.message.text.strip()
+    if not full_name:
+        await update.message.reply_text(msg.GATE_NAME_REQUIRED)
+        return GATE_NAME
+
+    user = update.effective_user
+    link = await _create_gate_invite_link(context, user.id)
+    if not link:
+        await update.message.reply_text(msg.GATE_LINK_FAILED, parse_mode="HTML")
+        return ConversationHandler.END
+
+    await db.gate_mark_registered(user.id, user.username, user.first_name, full_name, link)
+    await update.message.reply_text(
+        msg.GATE_APPROVED.format(name=html.escape(full_name), invite_link=link),
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
+    logger.info("Gate-registered %r (user %d, @%s)", full_name, user.id, user.username)
+    return ConversationHandler.END
+
+
+def _gate_just_joined(result) -> bool:
+    old = result.old_chat_member.status
+    new = result.new_chat_member.status
+    return old not in _PRESENT_STATUSES and new in _PRESENT_STATUSES
+
+
+async def gate_on_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """A member's status changed in a group where the bot is admin."""
+    result = update.chat_member
+    if result is None or not _gate_just_joined(result):
+        return
+    chat_id = result.chat.id
+    user = result.new_chat_member.user
+
+    if chat_id == ALUMNI_GATE_GROUP_ID:
+        # Made it into the alumni group — record it so we never nudge them.
+        await db.gate_mark_member(user.id, user.username, user.first_name)
+        return
+    if chat_id in ALUMNI_GATE_MONITORED_GROUP_IDS:
+        await _gate_process_user(context, chat_id, user)
+
+
+async def gate_on_group_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    if chat is None or chat.id not in ALUMNI_GATE_MONITORED_GROUP_IDS:
+        return
+    await _gate_process_user(context, chat.id, update.effective_user)
+
+
+async def gate_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+    counts = await db.gate_stats()
+    await update.message.reply_text(msg.GATE_STATS.format(**counts), parse_mode="HTML")
+
+
+async def gate_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+    registered = await db.gate_get_registered()
+    if not registered:
+        await update.message.reply_text(msg.GATE_LIST_EMPTY)
+        return
+    lines = [msg.GATE_LIST_HEADER.format(count=len(registered))]
+    for idx, row in enumerate(registered, start=1):
+        username_part = f" (@{row['username']})" if row.get("username") else ""
+        lines.append(msg.GATE_LIST_ENTRY.format(
+            idx=idx,
+            full_name=row.get("full_name") or row.get("first_name") or "—",
+            username_part=username_part,
+        ))
+    await update.message.reply_text("\n".join(lines))
+
+
 # ── App builder ────────────────────────────────────────────────────────────────
 
 def build_app() -> Application:
@@ -1082,11 +1303,27 @@ def build_app() -> Application:
         per_message=False,
     )
 
+    gate_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("alumni", gate_start, filters=_private),
+            MessageHandler(_private & filters.Text([msg.BTN_ALUMNI_GATE]), gate_start),
+            CallbackQueryHandler(gate_start, pattern=r"^start:alumnigate$"),
+        ],
+        states={
+            GATE_NAME: [
+                MessageHandler(_private & filters.TEXT & ~filters.COMMAND, gate_got_name)
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", cancel, filters=_private)],
+        per_message=False,
+    )
+
     app.add_handler(CommandHandler("start", start, filters=_private))
     app.add_handler(mentor_conv)
     app.add_handler(mentee_conv)
     app.add_handler(apf_conv)
     app.add_handler(elysium_conv)
+    app.add_handler(gate_conv)
     app.add_handler(CommandHandler("apf_set_post", apf_set_post, filters=_private))
     app.add_handler(CommandHandler("apf_list", apf_list, filters=_private))
     app.add_handler(CallbackQueryHandler(apf_approve_callback, pattern=r"^apf_approve:"))
@@ -1099,5 +1336,16 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("match", admin_match, filters=_private))
     app.add_handler(CommandHandler("review", admin_review, filters=_private))
     app.add_handler(CallbackQueryHandler(review_decision, pattern=r"^review:"))
+
+    # Alumni Gate: admin utilities + background detection.
+    app.add_handler(CommandHandler("gate_stats", gate_stats, filters=_private))
+    app.add_handler(CommandHandler("gate_list", gate_list, filters=_private))
+    app.add_handler(ChatMemberHandler(gate_on_chat_member, ChatMemberHandler.CHAT_MEMBER))
+    app.add_handler(
+        MessageHandler(
+            filters.ChatType.GROUPS & ~filters.StatusUpdate.ALL & ~filters.COMMAND,
+            gate_on_group_message,
+        )
+    )
 
     return app

@@ -2,6 +2,8 @@
 import asyncio
 import logging
 
+from telegram import Update
+
 from bot import build_app
 from database import init_db
 
@@ -16,7 +18,11 @@ async def main() -> None:
     app = build_app()
     await app.initialize()
     await app.start()
-    await app.updater.start_polling(drop_pending_updates=True)
+    # ALL_TYPES so Telegram also delivers chat_member (join) updates, which the
+    # Alumni Gate needs.
+    await app.updater.start_polling(
+        drop_pending_updates=True, allowed_updates=Update.ALL_TYPES
+    )
     try:
         await asyncio.Event().wait()
     finally:

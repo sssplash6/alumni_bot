@@ -347,3 +347,58 @@ ELYSIUM_SET_POST_USAGE = (
 ELYSIUM_LIST_EMPTY = "No Elysium pre-2025 submissions yet."
 ELYSIUM_LIST_HEADER = "📋 Elysium pre-2025 submissions ({count}):"
 ELYSIUM_LIST_ENTRY = "{idx}. {full_name} — {cohort}{username_part}"
+
+# ── Alumni Gate ─────────────────────────────────────────────────────────────────
+
+BTN_ALUMNI_GATE = "🎓 Join the Alumni Group"
+
+GATE_COMING_SOON = "🎓 The Alumni group is coming soon — stay tuned! ✨"
+
+# Shown in the DM when someone arrives via the group nudge deep link.
+GATE_DEEPLINK_INTRO = (
+    "🎓 <b>Alumni Group</b>\n\n"
+    "Let's get you into the official Alumni group. Tap below to start."
+)
+
+# Registration conversation
+GATE_ASK_NAME = (
+    "🎓 <b>Join the Alumni group</b>\n\n"
+    "First, what's your <b>full name</b>? (This is how you'll be listed in the "
+    "alumni records.)"
+)
+GATE_NAME_REQUIRED = "Please send your full name to continue. 🙂"
+
+GATE_APPROVED = (
+    "Thanks, {name}! ✅\n\n"
+    "Here's your personal one-time link to join the Alumni group — tap it and "
+    "you'll be admitted automatically:\n{invite_link}"
+)
+GATE_ALREADY_MEMBER = "✅ You're already in the Alumni group — you're all set! 🎉"
+GATE_LINK_FAILED = (
+    "⚠️ Something went wrong creating your invite link. Please contact an admin."
+)
+GATE_NOT_CONFIGURED = (
+    "⚙️ The Alumni group hasn't been set up yet. Please try again later, or "
+    "contact an admin."
+)
+
+# Group nudge (posted publicly; tags the person)
+GATE_GROUP_NUDGE = (
+    "👋 {mention} — looks like you're not in the official Alumni group yet!\n\n"
+    "Tap below to register. You'll get a personal one-time link and be let in "
+    "automatically. 🎓"
+)
+GATE_GROUP_NUDGE_BUTTON = "Join the Alumni group ▸"
+
+# Admin
+GATE_STATS = (
+    "📊 <b>Alumni Gate</b>\n\n"
+    "Already members: <b>{member}</b>\n"
+    "Nudged (awaiting): <b>{nudged}</b>\n"
+    "Registered via bot: <b>{registered}</b>\n"
+    "— — —\n"
+    "Total people seen: <b>{total}</b>"
+)
+GATE_LIST_EMPTY = "No alumni registrations via the gate yet."
+GATE_LIST_HEADER = "🎓 Alumni-gate registrations ({count}):"
+GATE_LIST_ENTRY = "{idx}. {full_name}{username_part}"

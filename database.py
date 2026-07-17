@@ -76,6 +76,22 @@ async def init_db() -> None:
                 created_at          TEXT NOT NULL
             )
         """)
+        # Alumni Gate: everyone the bot has classified against the alumni group.
+        # status is 'member' (already in) / 'nudged' (tagged once) /
+        # 'registered' (gave name + got a one-time link).
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS gate_users (
+                user_id       INTEGER PRIMARY KEY,
+                username      TEXT,
+                first_name    TEXT,
+                full_name     TEXT,
+                status        TEXT NOT NULL,
+                nudged_at     TEXT,
+                registered_at TEXT,
+                invite_link   TEXT,
+                updated_at    TEXT NOT NULL
+            )
+        """)
         # Migrations: add status column to existing tables if not present
         try:
             await db.execute(
@@ -474,6 +490,121 @@ async def elysium_get_all() -> list[dict]:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             "SELECT * FROM elysium_submissions ORDER BY created_at"
+        ) as cur:
+            rows = await cur.fetchall()
+    return [dict(r) for r in rows]
+
+
+# ── Alumni Gate ──────────────────────────────────────────────────────────────────
+
+GATE_STATUSES = ("member", "nudged", "registered")
+
+
+async def gate_get_user(user_id: int) -> dict | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM gate_users WHERE user_id = ?", (user_id,)
+        ) as cur:
+            row = await cur.fetchone()
+    return dict(row) if row else None
+
+
+async def _gate_upsert(
+    user_id: int,
+    status: str,
+    username: str | None = None,
+    first_name: str | None = None,
+    full_name: str | None = None,
+    nudged_at: str | None = None,
+    registered_at: str | None = None,
+    invite_link: str | None = None,
+) -> None:
+    """Insert or update a gate_users row, preserving existing non-null fields.
+
+    COALESCE keeps prior full_name / nudged_at / registered_at / invite_link so
+    recording a later status never wipes earlier facts.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO gate_users (
+                user_id, username, first_name, full_name, status,
+                nudged_at, registered_at, invite_link, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                username      = COALESCE(excluded.username, gate_users.username),
+                first_name    = COALESCE(excluded.first_name, gate_users.first_name),
+                full_name     = COALESCE(excluded.full_name, gate_users.full_name),
+                status        = excluded.status,
+                nudged_at     = COALESCE(excluded.nudged_at, gate_users.nudged_at),
+                registered_at = COALESCE(excluded.registered_at, gate_users.registered_at),
+                invite_link   = COALESCE(excluded.invite_link, gate_users.invite_link),
+                updated_at    = excluded.updated_at
+            """,
+            (
+                user_id, username, first_name, full_name, status,
+                nudged_at, registered_at, invite_link, now,
+            ),
+        )
+        await db.commit()
+
+
+async def gate_mark_member(user_id: int, username: str | None, first_name: str | None) -> None:
+    await _gate_upsert(user_id, "member", username=username, first_name=first_name)
+
+
+async def gate_mark_nudged(user_id: int, username: str | None, first_name: str | None) -> None:
+    await _gate_upsert(
+        user_id,
+        "nudged",
+        username=username,
+        first_name=first_name,
+        nudged_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+
+async def gate_mark_registered(
+    user_id: int,
+    username: str | None,
+    first_name: str | None,
+    full_name: str,
+    invite_link: str,
+) -> None:
+    await _gate_upsert(
+        user_id,
+        "registered",
+        username=username,
+        first_name=first_name,
+        full_name=full_name,
+        registered_at=datetime.now(timezone.utc).isoformat(),
+        invite_link=invite_link,
+    )
+
+
+async def gate_has_been_nudged(user_id: int) -> bool:
+    user = await gate_get_user(user_id)
+    return bool(user and user["nudged_at"])
+
+
+async def gate_stats() -> dict[str, int]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        result = {s: 0 for s in GATE_STATUSES}
+        async with db.execute(
+            "SELECT status, COUNT(*) AS n FROM gate_users GROUP BY status"
+        ) as cur:
+            for row in await cur.fetchall():
+                result[row[0]] = row[1]
+    result["total"] = sum(result[s] for s in GATE_STATUSES)
+    return result
+
+
+async def gate_get_registered() -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM gate_users WHERE status = 'registered' ORDER BY registered_at"
         ) as cur:
             rows = await cur.fetchall()
     return [dict(r) for r in rows]
