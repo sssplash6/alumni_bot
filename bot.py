@@ -1001,6 +1001,56 @@ async def elysium_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text("\n".join(lines))
 
 
+# ── Setup helpers ──────────────────────────────────────────────────────────────
+# Finding a group's chat ID is the fiddly part of configuring any group-aware
+# feature, so the bot reports it two ways: on demand, and unprompted when it's
+# added somewhere.
+
+async def id_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Report a chat's ID — the tool for filling in the group IDs in .env."""
+    chat = update.effective_chat
+    user = update.effective_user
+    # In groups, restrict to admins so members can't spam it.
+    if chat.type != "private" and (user is None or user.id not in ADMIN_IDS):
+        return
+    await update.effective_message.reply_text(
+        msg.ID_REPORT.format(
+            title=html.escape(chat.title or chat.full_name or "—"),
+            chat_type=chat.type,
+            chat_id=chat.id,
+        ),
+        parse_mode="HTML",
+    )
+
+
+async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """The bot itself was added to a chat — tell the admins its ID."""
+    result = update.my_chat_member
+    if result is None or result.new_chat_member.user.id != context.bot.id:
+        return
+
+    chat = result.chat
+    added = (
+        chat.type in ("group", "supergroup")
+        and result.old_chat_member.status in ("left", "kicked")
+        and result.new_chat_member.status in ("member", "administrator")
+    )
+    if not added:
+        return
+
+    for admin_id in ADMIN_IDS:
+        try:
+            await context.bot.send_message(
+                chat_id=admin_id,
+                text=msg.ADDED_TO_GROUP.format(
+                    title=html.escape(chat.title or "this group"), chat_id=chat.id
+                ),
+                parse_mode="HTML",
+            )
+        except Exception:
+            logger.debug("Could not notify admin %d about being added", admin_id)
+
+
 # ── Backups ────────────────────────────────────────────────────────────────────
 
 async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1199,6 +1249,10 @@ def build_app() -> Application:
     app.add_handler(CallbackQueryHandler(review_decision, pattern=r"^review:"))
 
     app.add_handler(CommandHandler("backup", backup_command, filters=_private))
+    app.add_handler(CommandHandler("id", id_command))
+    app.add_handler(
+        ChatMemberHandler(on_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER)
+    )
 
     # The Alumni Gate goes last: its private-message handlers match broadly, so
     # registering them after every ConversationHandler above means an

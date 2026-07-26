@@ -128,3 +128,54 @@ def test_error_handler_without_exception_attached():
     asyncio.run(bot.on_error(update, ctx))
 
     ctx.bot.send_message.assert_awaited()
+
+
+# ── Setup helpers ───────────────────────────────────────────────────────────────
+
+def test_id_command_reports_chat_id_in_private():
+    reply = AsyncMock()
+    update = SimpleNamespace(
+        effective_chat=SimpleNamespace(
+            id=-100222, type="supergroup", title="Cohort 2024", full_name=None
+        ),
+        effective_user=SimpleNamespace(id=bot.ADMIN_IDS[0]),
+        effective_message=SimpleNamespace(reply_text=reply),
+    )
+
+    asyncio.run(bot.id_command(update, _ctx()))
+
+    assert "-100222" in reply.await_args.args[0]
+
+
+def test_id_command_ignores_non_admins_in_groups():
+    reply = AsyncMock()
+    update = SimpleNamespace(
+        effective_chat=SimpleNamespace(
+            id=-100222, type="supergroup", title="G", full_name=None
+        ),
+        effective_user=SimpleNamespace(id=999999),
+        effective_message=SimpleNamespace(reply_text=reply),
+    )
+
+    asyncio.run(bot.id_command(update, _ctx()))
+
+    reply.assert_not_awaited()
+
+
+def test_added_to_group_notifies_admins():
+    ctx = _ctx()
+    ctx.bot.id = 42
+    update = SimpleNamespace(
+        my_chat_member=SimpleNamespace(
+            chat=SimpleNamespace(id=-100333, type="supergroup", title="New Group"),
+            old_chat_member=SimpleNamespace(status="left"),
+            new_chat_member=SimpleNamespace(
+                status="administrator", user=SimpleNamespace(id=42)
+            ),
+        )
+    )
+
+    asyncio.run(bot.on_my_chat_member(update, ctx))
+
+    ctx.bot.send_message.assert_awaited()
+    assert "-100333" in ctx.bot.send_message.await_args.kwargs["text"]

@@ -364,3 +364,17 @@ BACKUP_DONE = "💾 Database snapshot saved:\n<code>{path}</code>"
 BACKUP_FAILED = (
     "⚠️ Backup failed — check the logs. The bot is still running normally."
 )
+
+ID_REPORT = (
+    "🆔 <b>Chat info</b>\n"
+    "Title: <code>{title}</code>\n"
+    "Type: <code>{chat_type}</code>\n"
+    "ID: <code>{chat_id}</code>"
+)
+
+ADDED_TO_GROUP = (
+    "🤖 I was just added to <b>{title}</b>\n"
+    "Chat ID: <code>{chat_id}</code>\n\n"
+    "Put this in <code>.env</code> — e.g. <code>GATE_MONITORED_GROUP_IDS</code> or "
+    "<code>GATE_GROUP_ID</code> — then restart me."
+)
