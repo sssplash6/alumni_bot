@@ -1,0 +1,212 @@
+# ==============================================================================
+# Render Blueprint for the Alumni Bot
+# ==============================================================================
+# Deploy guide: docs/DEPLOY_RENDER.md
+# Spec reference: https://render.com/docs/blueprint-spec
+# JSON Schema:    https://render.com/schema/render.yaml.json
+#
+# Verified against Render's docs and pricing page on 2026-07-27.
+#
+# WHY THESE CHOICES (the short version — full reasoning in the deploy guide):
+#
+#   type: worker    main.py long-polls Telegram and never binds a port. A Render
+#                   *web service* would be marked unhealthy and cycled forever
+#                   because nothing ever listens on $PORT. Background workers
+#                   "do not expose a URL or internal hostname", which is exactly
+#                   this process. https://render.com/docs/background-workers
+#
+#   plan: starter   Background workers have NO free instance type. The Blueprint
+#                   spec spells it out: `free` is "not available for private
+#                   services, background workers, or cron jobs". Starter is the
+#                   floor: $7/month, 512 MB RAM, 0.5 CPU.
+#                   https://render.com/docs/compute-plans
+#
+#   disk:           Render's filesystem is ephemeral by default — "any changes
+#                   you make to a service's local files are lost every time the
+#                   service redeploys or restarts". The SQLite file holds live
+#                   mentor/mentee applications, fair submissions and gate state,
+#                   none of which is recoverable from Telegram. Without a disk,
+#                   every deploy silently wipes it. https://render.com/docs/disks
+#
+#                   The disk does double duty: attaching one also DISABLES
+#                   zero-downtime deploys, which this bot needs. See below.
+#
+# THE SINGLE-INSTANCE CONSTRAINT — DO NOT "FIX" THIS BY SCALING UP
+#
+#   Telegram allows exactly one getUpdates poller per bot token. Two running
+#   instances produce `Conflict: terminated by other getUpdates request` and
+#   updates get split unpredictably between them.
+#
+#   Render's normal zero-downtime deploy sequence would cause exactly that: the
+#   new instance is started while the old one keeps running, and SIGTERM is only
+#   sent to the old instance "after 60 seconds". That is a guaranteed ~60-second
+#   window with two live pollers. https://render.com/docs/deploys
+#
+#   Attaching a disk removes the overlap: "When you redeploy your service,
+#   Render stops the existing instance BEFORE bringing up the new instance."
+#   The trade is a few seconds of downtime per deploy, which is correct for this
+#   workload. https://render.com/docs/disks
+#
+#   Consequences to respect:
+#     * numInstances stays 1. A disk-backed service cannot be scaled to
+#       multiple instances anyway, and doing so would break the bot.
+#     * Never run a second copy of this service (staging, preview env, laptop)
+#       against the same BOT_TOKEN.
+# ==============================================================================
+
+# Preview environments are disabled. A preview env would boot a second copy of
+# this bot; if it ever got a real BOT_TOKEN it would fight the production
+# poller. Omitting this field also disables previews, but be explicit.
+# ('off' is quoted because bare `off` is a YAML boolean.)
+previews:
+  generation: 'off'
+
+services:
+  - type: worker
+    name: alumni-bot
+    runtime: python
+
+    # $7/month, 512 MB RAM, 0.5 CPU (pricing page, checked 2026-07-27).
+    # `free` is rejected for workers. Plenty of headroom for PTB + httpx +
+    # aiosqlite; move to `standard` only if the Metrics tab shows memory pressure.
+    plan: starter
+
+    # Region is PERMANENT — it cannot be changed after creation; you would have
+    # to delete and recreate the service (and its disk). `oregon` is Render's
+    # default. Latency is irrelevant for a long-polling bot, so this only
+    # matters if you later add a Render Postgres/Key Value instance, which must
+    # live in the same region to use the private network.
+    region: oregon
+
+    # The repo's default branch. Set explicitly so a stray branch never deploys.
+    branch: main
+
+    # requirements.txt pins python-telegram-bot[job-queue]==21.10 — the
+    # job-queue extra is load-bearing (backups, the gate's Airtable poll and
+    # announcement re-post all run on JobQueue). pytest/pytest-asyncio come
+    # along too; harmless, just a few extra seconds of build time.
+    buildCommand: pip install -r requirements.txt
+
+    # main.py: init_db() -> gate.init_schema() -> build_app() -> start_polling()
+    # -> block on asyncio.Event().wait(). No port, no WSGI server.
+    startCommand: python main.py
+
+    # Deploy on demand only, NOT on every push. Two reasons specific to this bot:
+    #   1. start_polling(drop_pending_updates=True) throws away everything
+    #      Telegram queued while the bot was down, so a deploy silently eats
+    #      messages sent during the restart window.
+    #   2. The ConversationHandlers have no persistence configured, so their
+    #      state lives in memory. A restart drops every half-finished
+    #      mentor/mentee/fair application on the floor.
+    # Deploy deliberately, when nobody is mid-flow. Change to `commit` if you
+    # decide you would rather have push-to-deploy.
+    autoDeployTrigger: 'off'
+
+    # main.py blocks on asyncio.Event().wait() and installs no SIGTERM handler,
+    # so the default disposition applies: the process dies immediately and the
+    # `finally: app.updater.stop()` block never runs. Nothing is lost — every DB
+    # call opens, commits and closes its own aiosqlite connection, so there is
+    # no open transaction to lose — but there is also nothing to wait for.
+    # Keep the shutdown delay short so redeploys are quick. (Default 30, max 300.)
+    maxShutdownDelaySeconds: 10
+
+    # --------------------------------------------------------------------------
+    # Persistent disk — the SQLite database and its backups live here.
+    # --------------------------------------------------------------------------
+    # ONLY paths under mountPath survive a deploy or restart. Everything else,
+    # including the checked-out repo at /opt/render/project/src, is wiped and
+    # rebuilt every time. That is why DB_PATH and BACKUP_DIR below MUST point
+    # inside /var/data: config.py otherwise defaults them to the repo directory,
+    # i.e. straight into the ephemeral filesystem.
+    #
+    # 1 GB is the minimum and is enormous for this workload (the DB is tens of
+    # KB; BACKUP_KEEP defaults to 14 snapshots). You can grow a disk later but
+    # you can NEVER shrink it, so start small. $0.25/GB/month.
+    # Render snapshots the disk automatically every 24h, retained >= 7 days.
+    disk:
+      name: alumni-bot-data
+      mountPath: /var/data
+      sizeGB: 1
+
+    envVars:
+      # ---- Build/runtime environment ---------------------------------------
+      # Render's default is Python 3.14.3 for services created on or after
+      # 2026-02-11. python-telegram-bot 21.10 declares support only up to 3.13
+      # (its PyPI classifiers stop there) and this repo is developed on 3.11
+      # (see the cpython-311 bytecode in __pycache__), so pin 3.11 for parity.
+      # PYTHON_VERSION requires a fully qualified x.y.z version.
+      # If a build ever fails resolving this exact patch release, 3.11.11 is a
+      # safe fallback — Render shipped it as its own default for six months.
+      # https://render.com/docs/python-version
+      - key: PYTHON_VERSION
+        value: 3.11.15
+
+      # logging writes to stderr (line-buffered), but this also flushes any
+      # print() so nothing sits in a block buffer while you stare at the logs.
+      - key: PYTHONUNBUFFERED
+        value: '1'
+
+      # ---- Paths that MUST live on the persistent disk ---------------------
+      # Both of these override config.py defaults that point at the repo
+      # directory. Getting them wrong is silent data loss, not a crash.
+      # DB_PATH sits at the mount root on purpose: init_db() connects straight
+      # to this file and sqlite will not create missing parent directories, so
+      # a nested path like /var/data/db/alumni_bot.db would fail on first boot.
+      # (database.backup() does mkdir(parents=True), so BACKUP_DIR may nest.)
+      - key: DB_PATH
+        value: /var/data/alumni_bot.db
+      - key: BACKUP_DIR
+        value: /var/data/backups
+
+      # ---- Secrets and per-deployment values -------------------------------
+      # `sync: false` means "prompt me in the Dashboard, never store it here".
+      # Two caveats worth knowing:
+      #   * Render prompts for these ONLY during the initial Blueprint creation
+      #     flow. When you later re-sync this file, `sync: false` vars are
+      #     ignored — add or change them by hand in the Dashboard.
+      #   * They are deliberately excluded from preview environments.
+      # https://render.com/docs/blueprint-spec#prompting-for-secret-values
+      #
+      # Required by config.py — the process refuses to start without them:
+      - key: BOT_TOKEN            # from @BotFather. A real secret.
+        sync: false
+      - key: ADMIN_IDS            # comma-separated Telegram user IDs, e.g. "123,456"
+        sync: false
+
+      # ---- Alumni Gate (gate/settings.py) ----------------------------------
+      # The gate stays dormant until GATE_LIVE is truthy (1/true/yes/on) AND
+      # GATE_GROUP_ID is non-zero. Leave GATE_LIVE empty for the first deploy,
+      # fill in the IDs and Airtable block, then flip it on. Blank values are
+      # safe: every one of these parses "" to a sane zero/empty default.
+      - key: GATE_LIVE
+        sync: false
+      - key: GATE_GROUP_ID              # the one alumni group; bot must be admin
+        sync: false
+      - key: GATE_MONITORED_GROUP_IDS   # comma-separated chat IDs to watch
+        sync: false
+      - key: GATE_AIRTABLE_TOKEN        # Airtable PAT. A real secret.
+        sync: false
+      - key: GATE_AIRTABLE_BASE_ID
+        sync: false
+      - key: GATE_AIRTABLE_TABLE        # table name or tblXXXXXXXXXXXXXX
+        sync: false
+      - key: GATE_FORM_URL              # public Airtable form share link
+        sync: false
+      - key: GATE_VALUES_DOC_URL
+        sync: false
+
+      # Deliberately NOT declared here, so the defaults in config.py and
+      # gate/settings.py stay the single source of truth. Add any of them in the
+      # Dashboard (Environment tab) if you need to override:
+      #
+      #   BACKUP_INTERVAL_HOURS      default 24   (0 disables the job; /backup still works)
+      #   BACKUP_KEEP                default 14
+      #   GATE_INTRO_MIN_WORDS       default 50
+      #   GATE_ANNOUNCE_INTERVAL_DAYS default 5   (0 disables the re-post)
+      #   GATE_POLL_INTERVAL_MINUTES default 3    (0 disables the Airtable poll)
+      #   GATE_AIRTABLE_TG_FIELD     default tg_id
+      #   GATE_AIRTABLE_DONE_FIELD   optional
+      #   GATE_AIRTABLE_NAME_FIELD   optional
+      #
+      # Anything set in the Dashboard survives a Blueprint sync as long as it is
+      # not also declared with a hardcoded `value:` in this file.
