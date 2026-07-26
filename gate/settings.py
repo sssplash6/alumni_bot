@@ -75,6 +75,21 @@ AIRTABLE_DONE_FIELD: str = os.environ.get("GATE_AIRTABLE_DONE_FIELD", "").strip(
 # Optional: a field holding the student's full name, kept on the roster.
 AIRTABLE_NAME_FIELD: str = os.environ.get("GATE_AIRTABLE_NAME_FIELD", "").strip()
 
+# Optional: a field holding a student-typed Telegram username (e.g. "@alice"),
+# used ONLY as a fallback for rows submitted before tg_id existed.
+#
+# Username is a poor primary key — it's optional on Telegram, changeable at any
+# time, and self-reported — which is exactly why tg_id is the real key. But for a
+# backlog of submissions that predate tg_id, it's the only link available, and
+# the bot compares against the username Telegram reports for whoever is talking
+# to it rather than anything the student types now. Matching is done on a
+# normalized value (no leading @, case-insensitive, trimmed).
+#
+# Leave blank to disable the fallback and require a tg_id match.
+AIRTABLE_USERNAME_FIELD: str = os.environ.get(
+    "GATE_AIRTABLE_USERNAME_FIELD", ""
+).strip()
+
 # The public Airtable form share link. The bot appends the personal prefill.
 FORM_URL: str = os.environ.get("GATE_FORM_URL", "").strip()
 

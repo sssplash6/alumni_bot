@@ -383,7 +383,9 @@ def test_poll_advances_completed_to_intro(live):
     with patch.object(settings, "airtable_ready", lambda: True), patch.object(
         gh.formcheck,
         "fetch_completed",
-        AsyncMock(return_value={"111": "One Fullname"}),
+        AsyncMock(
+            return_value={"by_id": {"111": "One Fullname"}, "by_username": {}}
+        ),
     ):
         asyncio.run(gh.poll_forms(ctx))
 
@@ -394,3 +396,116 @@ def test_poll_advances_completed_to_intro(live):
     assert asyncio.run(gdb.get_user(222))["status"] == "awaiting_form"
     ctx.bot.send_message.assert_awaited_once()
     assert ctx.bot.send_message.await_args.kwargs["chat_id"] == 111
+
+
+# ── Legacy backlog: rows that predate tg_id ─────────────────────────────────────
+
+def test_poll_matches_legacy_row_by_username(live):
+    """A student whose submission predates tg_id must still be advanced — with
+    900+ historical rows, re-submitting is not an option."""
+    asyncio.run(gdb.mark_awaiting_form(111, "Alecc_lefk", "Alec"))
+    ctx = _ctx(member_status=None)
+
+    with patch.object(settings, "airtable_ready", lambda: True), patch.object(
+        gh.formcheck,
+        "fetch_completed",
+        AsyncMock(
+            return_value={
+                "by_id": {},
+                "by_username": {"alecc_lefk": "Alec Lefkowitz"},
+            }
+        ),
+    ):
+        asyncio.run(gh.poll_forms(ctx))
+
+    moved = asyncio.run(gdb.get_user(111))
+    assert moved["status"] == "awaiting_intro"
+    assert moved["full_name"] == "Alec Lefkowitz"
+
+
+def test_poll_prefers_tg_id_over_username(live):
+    asyncio.run(gdb.mark_awaiting_form(111, "alice", "Alice"))
+    ctx = _ctx(member_status=None)
+
+    with patch.object(settings, "airtable_ready", lambda: True), patch.object(
+        gh.formcheck,
+        "fetch_completed",
+        AsyncMock(
+            return_value={
+                "by_id": {"111": "From tg_id"},
+                "by_username": {"alice": "From username"},
+            }
+        ),
+    ):
+        asyncio.run(gh.poll_forms(ctx))
+
+    assert asyncio.run(gdb.get_user(111))["full_name"] == "From tg_id"
+
+
+def test_poll_ignores_users_with_no_username_and_no_id_match(live):
+    asyncio.run(gdb.mark_awaiting_form(111, None, "NoHandle"))
+    ctx = _ctx(member_status=None)
+
+    with patch.object(settings, "airtable_ready", lambda: True), patch.object(
+        gh.formcheck,
+        "fetch_completed",
+        AsyncMock(return_value={"by_id": {}, "by_username": {"someone": None}}),
+    ):
+        asyncio.run(gh.poll_forms(ctx))
+
+    assert asyncio.run(gdb.get_user(111))["status"] == "awaiting_form"
+    ctx.bot.send_message.assert_not_awaited()
+
+
+def test_check_form_passes_username_for_legacy_matching(live):
+    """on_check_form must hand the username to lookup(), or the 900-row backlog
+    can only ever be matched by the poll."""
+    asyncio.run(gdb.mark_awaiting_form(555, "alice", "Alice"))
+    ctx = _ctx(member_status=None)
+    reply = AsyncMock()
+    query = SimpleNamespace(
+        answer=AsyncMock(), message=SimpleNamespace(reply_text=reply)
+    )
+    update = SimpleNamespace(effective_user=_user(), callback_query=query)
+    seen = {}
+
+    async def fake_lookup(tg_id, username=None):
+        seen["tg_id"], seen["username"] = tg_id, username
+        return {"complete": True, "name": "Ada", "matched_by": "username"}
+
+    with patch.object(gh.formcheck, "lookup", fake_lookup):
+        asyncio.run(gh.on_check_form(update, ctx))
+
+    assert seen == {"tg_id": 555, "username": "alice"}
+    assert asyncio.run(gdb.get_user(555))["status"] == "awaiting_intro"
+
+
+def test_existing_alumni_member_never_touches_airtable(live):
+    """The ~900 historical submitters are already in the alumni group. The
+    membership check must short-circuit before any Airtable lookup, so they are
+    classified silently and never asked to fill in a form again."""
+    ctx = _ctx(member_status="member")
+    called = []
+
+    async def fake_lookup(*a, **kw):
+        called.append(a)
+        return {"complete": False, "name": None, "matched_by": None}
+
+    with patch.object(gh.formcheck, "lookup", fake_lookup):
+        # Every entry point an existing member could arrive through.
+        update, reply = _dm(None)
+        asyncio.run(gh.start_onboarding(update, ctx))
+
+        tap_update, query = _group_tap()
+        asyncio.run(gh.on_check_me(tap_update, ctx))
+
+        cb_reply = AsyncMock()
+        cb = SimpleNamespace(answer=AsyncMock(), message=SimpleNamespace(reply_text=cb_reply))
+        asyncio.run(gh.on_check_form(
+            SimpleNamespace(effective_user=_user(), callback_query=cb), ctx
+        ))
+
+    assert called == [], "an existing member should never trigger an Airtable call"
+    assert asyncio.run(gdb.get_user(555))["status"] == "member"
+    # And nothing was posted publicly about them.
+    ctx.bot.send_message.assert_not_awaited()

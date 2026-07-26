@@ -91,7 +91,29 @@ def _wanted_fields() -> list[str]:
         fields.append(settings.AIRTABLE_NAME_FIELD)
     if settings.AIRTABLE_DONE_FIELD:
         fields.append(settings.AIRTABLE_DONE_FIELD)
+    if settings.AIRTABLE_USERNAME_FIELD:
+        fields.append(settings.AIRTABLE_USERNAME_FIELD)
     return fields
+
+
+def _normalize_username(username: str | None) -> str | None:
+    """Reduce a Telegram username to a comparable form, or None if unusable.
+
+    Legacy rows were typed by hand, so they carry a mix of "@alice", "alice" and
+    "Alice". Telegram usernames are 5-32 chars of [A-Za-z0-9_] and are
+    case-insensitive, so lowercasing and dropping everything else is lossless for
+    a real username — and it doubles as the guard that keeps this value safe to
+    interpolate into a formula.
+    """
+    if not username:
+        return None
+    cleaned = "".join(c for c in username.strip().lstrip("@") if c.isalnum() or c == "_")
+    return cleaned.lower() or None
+
+
+def _username_matches(raw: str | None, normalized: str) -> bool:
+    """Whether a cell's typed username refers to the same person."""
+    return _normalize_username(raw) == normalized
 
 
 def _is_complete(fields: dict) -> bool:
@@ -121,11 +143,63 @@ def _name_from(fields: dict) -> str | None:
     return None
 
 
-async def lookup(tg_id: int) -> dict | None:
+async def _query(formula: str) -> list[dict] | None:
+    """Run one filterByFormula query. None means "couldn't ask", not "no rows"."""
+    params: dict[str, str] = {"filterByFormula": formula}
+    # Normally one row per person, so cap the response. With a "done" field
+    # configured we must look at every match: someone who submitted twice may
+    # have an incomplete earlier row, and inspecting only the first would leave
+    # them unverifiable forever.
+    if not settings.AIRTABLE_DONE_FIELD:
+        params["maxRecords"] = "1"
+
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            resp = await client.get(_table_url(), headers=_headers(), params=params)
+            _log_http_hint(resp)
+            resp.raise_for_status()
+            return resp.json().get("records", [])
+    except Exception:
+        logger.exception("Airtable query failed for formula %s", formula)
+        return None
+
+
+def _result_from(records: list[dict]) -> dict:
+    """Any complete submission counts; fall back to the first row for the name."""
+    for record in records:
+        fields = record.get("fields", {})
+        if _is_complete(fields):
+            return {"complete": True, "name": _name_from(fields)}
+    return {"complete": False, "name": _name_from(records[0].get("fields", {}))}
+
+
+def _legacy_lookup_field() -> str | None:
+    """The username field to fall back on, if it's configured and usable."""
+    field = settings.AIRTABLE_USERNAME_FIELD
+    if not field:
+        return None
+    if not _field_name_safe(field):
+        logger.error(
+            "GATE_AIRTABLE_USERNAME_FIELD=%r can't be used in a formula — it must "
+            "be the field's NAME and must not contain { } ' \" or \\",
+            field,
+        )
+        return None
+    return field
+
+
+async def lookup(tg_id: int, username: str | None = None) -> dict | None:
     """Check a single student.
 
-    Returns ``{"complete": bool, "name": str|None}``, or ``None`` if Airtable
-    isn't configured or the request failed.
+    Returns ``{"complete": bool, "name": str|None, "matched_by": str|None}``, or
+    ``None`` if Airtable isn't configured or a request failed.
+
+    Two keys are tried in order of trustworthiness:
+
+    1. ``tg_id`` — prefilled by the bot, so an exact match is proof.
+    2. the username field — only for rows submitted before tg_id existed. The
+       username compared here is the one Telegram reports for the person talking
+       to the bot, not anything they type, so only the stored side is unreliable.
     """
     if not settings.airtable_ready():
         return None
@@ -140,46 +214,49 @@ async def lookup(tg_id: int) -> dict | None:
     # `{field}&''` coerces the stored value to text so the match works whether the
     # Airtable field is a text or a number field. int() keeps the interpolation
     # safe even if a caller passes something looser than the annotation promises.
-    formula = "{%s}&''='%d'" % (settings.AIRTABLE_TG_FIELD, int(tg_id))
-    params: dict[str, str] = {"filterByFormula": formula}
-    # Normally one row per person, so cap the response. With a "done" field
-    # configured we must look at every match: someone who submitted twice may
-    # have an incomplete earlier row, and inspecting only the first would leave
-    # them unverifiable forever.
-    if not settings.AIRTABLE_DONE_FIELD:
-        params["maxRecords"] = "1"
-
-    try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            resp = await client.get(_table_url(), headers=_headers(), params=params)
-            _log_http_hint(resp)
-            resp.raise_for_status()
-            records = resp.json().get("records", [])
-    except Exception:
-        logger.exception("Airtable lookup failed for tg_id %s", tg_id)
+    records = await _query("{%s}&''='%d'" % (settings.AIRTABLE_TG_FIELD, int(tg_id)))
+    if records is None:
         return None
+    if records:
+        return {**_result_from(records), "matched_by": "tg_id"}
 
-    if not records:
-        return {"complete": False, "name": None}
+    # No tg_id row — fall back to the legacy username column.
+    normalized = _normalize_username(username)
+    legacy_field = _legacy_lookup_field()
+    if normalized and legacy_field:
+        # Normalize inside the formula too: stored values are hand-typed, so they
+        # carry stray @ prefixes, casing and whitespace.
+        formula = "LOWER(TRIM(SUBSTITUTE({%s},'@','')))='%s'" % (
+            legacy_field, normalized,
+        )
+        records = await _query(formula)
+        if records is None:
+            return None
+        if records:
+            logger.info(
+                "Matched user %d to a pre-tg_id submission by username @%s",
+                tg_id, normalized,
+            )
+            return {**_result_from(records), "matched_by": "username"}
 
-    # Any complete submission counts; fall back to the first row for the name.
-    for record in records:
-        fields = record.get("fields", {})
-        if _is_complete(fields):
-            return {"complete": True, "name": _name_from(fields)}
-    return {"complete": False, "name": _name_from(records[0].get("fields", {}))}
+    return {"complete": False, "name": None, "matched_by": None}
 
 
-async def fetch_completed() -> dict[str, str | None] | None:
+async def fetch_completed() -> dict[str, dict[str, str | None]] | None:
     """One paginated pass over the table for the background poll.
 
-    Returns ``{tg_id_str: full_name_or_None}`` for every completed submission, or
-    ``None`` if Airtable isn't configured or a request failed.
+    Returns ``{"by_id": {tg_id_str: name}, "by_username": {normalized: name}}``
+    covering every completed submission, or ``None`` if Airtable isn't configured
+    or a request failed.
+
+    Both maps are built in the same pass so the poll can advance people whose row
+    predates tg_id without spending extra API calls.
     """
     if not settings.airtable_ready():
         return None
 
-    completed: dict[str, str | None] = {}
+    by_id: dict[str, str | None] = {}
+    by_username: dict[str, str | None] = {}
     offset: str | None = None
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
@@ -199,19 +276,29 @@ async def fetch_completed() -> dict[str, str | None] | None:
                 data = resp.json()
                 for record in data.get("records", []):
                     fields = record.get("fields", {})
-                    tg = fields.get(settings.AIRTABLE_TG_FIELD)
-                    if tg in (None, ""):
-                        continue
                     if not _is_complete(fields):
                         continue
-                    completed[str(tg).strip()] = _name_from(fields)
+                    name = _name_from(fields)
+
+                    tg = fields.get(settings.AIRTABLE_TG_FIELD)
+                    if tg not in (None, ""):
+                        by_id[str(tg).strip()] = name
+
+                    if settings.AIRTABLE_USERNAME_FIELD:
+                        handle = _normalize_username(
+                            fields.get(settings.AIRTABLE_USERNAME_FIELD)
+                        )
+                        # Don't let an earlier row shadow a later one that has a
+                        # name, but otherwise first write wins.
+                        if handle and (handle not in by_username or name):
+                            by_username[handle] = name
                 offset = data.get("offset")
                 if not offset:
                     break
     except Exception:
         logger.exception("Airtable fetch_completed failed")
         return None
-    return completed
+    return {"by_id": by_id, "by_username": by_username}
 
 
 def personalized_form_url(tg_id: int) -> str | None:

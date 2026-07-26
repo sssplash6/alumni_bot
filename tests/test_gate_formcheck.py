@@ -117,3 +117,134 @@ def test_is_complete_with_done_field(value, complete):
 def test_is_complete_treats_missing_done_field_as_incomplete():
     with patch.multiple(settings, AIRTABLE_DONE_FIELD="done"):
         assert fc._is_complete({"other": "x"}) is False
+
+
+# ── Legacy username fallback (for submissions predating tg_id) ───────────────────
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("@Alecc_lefk", "alecc_lefk"),
+        ("Alecc_lefk", "alecc_lefk"),
+        ("  @zaraibrgm  ", "zaraibrgm"),
+        ("@ssmndr", "ssmndr"),
+        ("@Tursunboyev06", "tursunboyev06"),
+        ("t.me/alice", "tmealice"),   # stray punctuation dropped
+        ("@", None),
+        ("", None),
+        (None, None),
+        ("!!!", None),
+    ],
+)
+def test_normalize_username(raw, expected):
+    assert fc._normalize_username(raw) == expected
+
+
+def test_username_matching_is_case_and_prefix_insensitive():
+    """The stored side was hand-typed; the bot's side comes from Telegram."""
+    assert fc._username_matches("@Alecc_lefk", "alecc_lefk") is True
+    assert fc._username_matches("alecc_lefk", "alecc_lefk") is True
+    assert fc._username_matches("  ALECC_LEFK ", "alecc_lefk") is True
+    assert fc._username_matches("@someone_else", "alecc_lefk") is False
+    assert fc._username_matches(None, "alecc_lefk") is False
+
+
+def test_normalize_username_strips_formula_breaking_characters():
+    """This normalization doubles as the injection guard for the formula."""
+    assert fc._normalize_username("a'}{\"\\b") == "ab"
+
+
+_AIRTABLE_ON = dict(
+    AIRTABLE_TOKEN="pat",
+    AIRTABLE_BASE_ID="app1",
+    AIRTABLE_TABLE="T",
+    AIRTABLE_TG_FIELD="tg_id",
+    AIRTABLE_DONE_FIELD="",
+    AIRTABLE_NAME_FIELD="Full name",
+    AIRTABLE_USERNAME_FIELD="Telegram Username",
+)
+
+
+@pytest.mark.asyncio
+async def test_lookup_prefers_tg_id_and_skips_the_fallback():
+    calls = []
+
+    async def fake_query(formula):
+        calls.append(formula)
+        return [{"fields": {"tg_id": "555", "Full name": "Ada"}}]
+
+    with patch.multiple(settings, **_AIRTABLE_ON), patch.object(fc, "_query", fake_query):
+        result = await fc.lookup(555, "alice")
+
+    assert result == {"complete": True, "name": "Ada", "matched_by": "tg_id"}
+    assert len(calls) == 1, "should not query the username field once tg_id matched"
+
+
+@pytest.mark.asyncio
+async def test_lookup_falls_back_to_username_for_legacy_rows():
+    async def fake_query(formula):
+        # No tg_id row; the legacy row only has the typed username.
+        if "tg_id" in formula:
+            return []
+        return [{"fields": {"Telegram Username": "@Alecc_lefk", "Full name": "Alec"}}]
+
+    with patch.multiple(settings, **_AIRTABLE_ON), patch.object(fc, "_query", fake_query):
+        result = await fc.lookup(555, "alecc_lefk")
+
+    assert result == {"complete": True, "name": "Alec", "matched_by": "username"}
+
+
+@pytest.mark.asyncio
+async def test_lookup_fallback_normalizes_into_the_formula():
+    seen = []
+
+    async def fake_query(formula):
+        seen.append(formula)
+        return [] if "tg_id" in formula else [{"fields": {}}]
+
+    with patch.multiple(settings, **_AIRTABLE_ON), patch.object(fc, "_query", fake_query):
+        await fc.lookup(555, "@Alecc_lefk")
+
+    legacy = seen[-1]
+    assert "LOWER(TRIM(SUBSTITUTE({Telegram Username},'@','')))='alecc_lefk'" in legacy
+
+
+@pytest.mark.asyncio
+async def test_lookup_no_fallback_when_username_field_unset():
+    calls = []
+
+    async def fake_query(formula):
+        calls.append(formula)
+        return []
+
+    with patch.multiple(settings, **{**_AIRTABLE_ON, "AIRTABLE_USERNAME_FIELD": ""}), \
+            patch.object(fc, "_query", fake_query):
+        result = await fc.lookup(555, "alice")
+
+    assert result["matched_by"] is None
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_lookup_no_fallback_when_user_has_no_username():
+    """Plenty of Telegram accounts have no username — that must not crash."""
+    calls = []
+
+    async def fake_query(formula):
+        calls.append(formula)
+        return []
+
+    with patch.multiple(settings, **_AIRTABLE_ON), patch.object(fc, "_query", fake_query):
+        result = await fc.lookup(555, None)
+
+    assert result["matched_by"] is None
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_lookup_returns_none_when_fallback_request_fails():
+    async def fake_query(formula):
+        return [] if "tg_id" in formula else None
+
+    with patch.multiple(settings, **_AIRTABLE_ON), patch.object(fc, "_query", fake_query):
+        assert await fc.lookup(555, "alice") is None

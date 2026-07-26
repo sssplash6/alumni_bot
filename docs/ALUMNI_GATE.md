@@ -82,6 +82,25 @@ a row whose ID field matches — no usernames, no screenshots, no typing.
 See `docs/AIRTABLE_SETUP.md` for the setup runbook and
 `scripts/check_airtable.py` for a pre-flight check.
 
+**Existing members never reach any of this.** Every entry point checks alumni
+membership *before* consulting Airtable, so anyone already in the group is
+classified silently and is never asked for a form or an intro — which is what
+makes an existing cohort of several hundred people zero-friction. A test pins
+this property down, because it's easy to break by reordering a handler.
+
+**Legacy submissions.** For rows that predate `tg_id`, setting
+`GATE_AIRTABLE_USERNAME_FIELD` to a student-typed username column enables a
+fallback: if no `tg_id` row matches, the bot tries that column instead. Both
+sides are normalized (leading `@` dropped, lowercased, trimmed), so `@Alice`,
+`alice` and ` ALICE ` all match. The bot's side is the username **Telegram
+reports** for whoever is talking to it, not something the student retypes.
+
+This is a deliberate weakening, scoped to legacy rows only: usernames are
+optional on Telegram, changeable, and self-reported, so someone could rename
+their account to squat a username in the historical list. New submissions always
+match on `tg_id`, where a match is proof. Leave the setting blank to disable the
+fallback entirely and require `tg_id`.
+
 **The intro is a gate, not a record.** The bot requires an intro of at least
 `GATE_INTRO_MIN_WORDS` words before issuing the link, but doesn't keep or forward
 it — the student re-posts the real thing in the alumni group once they're in. Any

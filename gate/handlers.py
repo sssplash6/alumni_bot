@@ -419,7 +419,8 @@ async def on_check_form(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await reply(msg.ALREADY_MEMBER, parse_mode="HTML")
         return
 
-    result = await formcheck.lookup(user.id)
+    # The username is passed so a submission predating tg_id can still be found.
+    result = await formcheck.lookup(user.id, user.username)
     if result is None:
         await reply(msg.CHECK_UNAVAILABLE, parse_mode="HTML")
         return
@@ -549,12 +550,24 @@ async def poll_forms(context: ContextTypes.DEFAULT_TYPE) -> None:
     completed = await formcheck.fetch_completed()
     if not completed:
         return
+    by_id = completed.get("by_id", {})
+    by_username = completed.get("by_username", {})
 
     for row in waiting:
         key = str(row["user_id"])
-        if key not in completed:
-            continue
-        name = completed[key] or row["full_name"] or row["first_name"]
+        if key in by_id:
+            found = by_id[key]
+        else:
+            # Fall back to a pre-tg_id submission matched on username.
+            handle = formcheck._normalize_username(row["username"])
+            if not handle or handle not in by_username:
+                continue
+            found = by_username[handle]
+            logger.info(
+                "Poll matched user %d to a pre-tg_id submission by username @%s",
+                row["user_id"], handle,
+            )
+        name = found or row["full_name"] or row["first_name"]
         await db.mark_awaiting_intro(
             row["user_id"], row["username"], row["first_name"], name
         )
