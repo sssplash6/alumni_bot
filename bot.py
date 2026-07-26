@@ -1,6 +1,8 @@
 # bot.py
 import html
 import logging
+import traceback
+from datetime import datetime, timedelta, timezone
 
 from telegram import (
     InlineKeyboardButton,
@@ -22,10 +24,18 @@ from telegram.ext import (
 
 import database as db
 import messages as msg
-from config import ADMIN_IDS, BOT_TOKEN
+from config import ADMIN_IDS, BACKUP_INTERVAL_HOURS, BACKUP_KEEP, BOT_TOKEN
 from matcher import run_matching
 
 logger = logging.getLogger(__name__)
+
+# Admin error alerts are muted for this long after one is sent. A fault that
+# fires on every update would otherwise DM the admins in a loop.
+_ERROR_ALERT_COOLDOWN = timedelta(minutes=15)
+_last_error_alert: datetime | None = None
+
+# Telegram caps a message at 4096 chars; leave room for the surrounding copy.
+_ERROR_DETAIL_CHARS = 1200
 
 # Hard-fixed reviewers who receive Admissions Program Fair registrations and
 # can approve/reject them. Carried over from the freshbot.
@@ -1201,6 +1211,83 @@ async def gate_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("\n".join(lines))
 
 
+# ── Backups ────────────────────────────────────────────────────────────────────
+
+async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Snapshot the database now (admins only)."""
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+    path = await db.backup()
+    if path:
+        await update.message.reply_text(
+            msg.BACKUP_DONE.format(path=html.escape(path)), parse_mode="HTML"
+        )
+    else:
+        await update.message.reply_text(msg.BACKUP_FAILED, parse_mode="HTML")
+
+
+async def backup_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Scheduled database snapshot."""
+    path = await db.backup()
+    if path:
+        logger.info("Database backed up to %s", path)
+
+
+# ── Errors ─────────────────────────────────────────────────────────────────────
+
+async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log any unhandled handler exception and alert the admins.
+
+    Alerts are throttled: a fault that trips on every update would otherwise DM
+    everyone in a loop. The log always gets the full traceback regardless, so
+    muting an alert never loses information.
+
+    This must not raise — an error handler that errors is swallowed silently by
+    the framework, which is the one failure mode that leaves you blind.
+    """
+    global _last_error_alert
+
+    logger.exception(
+        "Unhandled error while processing an update", exc_info=context.error
+    )
+
+    now = datetime.now(timezone.utc)
+    if _last_error_alert and now - _last_error_alert < _ERROR_ALERT_COOLDOWN:
+        return
+    _last_error_alert = now
+
+    where = ""
+    chat = getattr(update, "effective_chat", None)
+    user = getattr(update, "effective_user", None)
+    if chat is not None:
+        where += f"\nChat: <code>{chat.id}</code>"
+    if user is not None:
+        where += f"\nUser: <code>{user.id}</code>"
+
+    error = context.error
+    if error is not None:
+        detail = "".join(
+            traceback.format_exception(type(error), error, error.__traceback__)
+        )
+    else:
+        detail = "No exception attached to the update."
+
+    text = msg.ADMIN_ERROR.format(
+        where=where,
+        detail=html.escape(detail[-_ERROR_DETAIL_CHARS:]),
+        cooldown=int(_ERROR_ALERT_COOLDOWN.total_seconds() // 60),
+    )
+    for admin_id in ADMIN_IDS:
+        try:
+            await context.bot.send_message(
+                chat_id=admin_id, text=text, parse_mode="HTML"
+            )
+        except Exception:
+            # Usually means this admin has never started the bot, so it can't DM
+            # them. Nothing to do but note it.
+            logger.debug("Could not send error alert to admin %d", admin_id)
+
+
 # ── App builder ────────────────────────────────────────────────────────────────
 
 def build_app() -> Application:
@@ -1347,5 +1434,18 @@ def build_app() -> Application:
             gate_on_group_message,
         )
     )
+
+    app.add_handler(CommandHandler("backup", backup_command, filters=_private))
+    app.add_error_handler(on_error)
+
+    # Periodic DB snapshots. The first runs shortly after boot so there's always
+    # a recent copy, rather than waiting a full interval for the first one.
+    if BACKUP_INTERVAL_HOURS > 0 and app.job_queue is not None:
+        app.job_queue.run_repeating(
+            backup_job, interval=BACKUP_INTERVAL_HOURS * 3600, first=120
+        )
+        logger.info(
+            "Database backups every %d h, keeping %d", BACKUP_INTERVAL_HOURS, BACKUP_KEEP
+        )
 
     return app

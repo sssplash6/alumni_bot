@@ -7,3 +7,8 @@ __pycache__/
 venv/
 *.db
 .DS_Store
+backups/
+
+# Stray .git from an aborted clone of this same repo (no objects, no refs).
+# Safe to delete: rm -rf alumni_bot/
+/alumni_bot/

@@ -1,8 +1,12 @@
 # database.py
 import json
+import logging
 from datetime import datetime, timezone
+from pathlib import Path
 import aiosqlite
-from config import DB_PATH
+from config import BACKUP_DIR, BACKUP_KEEP, DB_PATH
+
+logger = logging.getLogger(__name__)
 
 
 async def init_db() -> None:
@@ -608,3 +612,55 @@ async def gate_get_registered() -> list[dict]:
         ) as cur:
             rows = await cur.fetchall()
     return [dict(r) for r in rows]
+
+
+# ── Backups ─────────────────────────────────────────────────────────────────────
+
+def _prune_backups(directory: Path, pattern: str, keep: int) -> None:
+    """Delete the oldest snapshots beyond ``keep``.
+
+    Filenames carry a fixed-width UTC stamp, so sorting by name sorts them
+    chronologically.
+    """
+    if keep <= 0:
+        return
+    snapshots = sorted(directory.glob(pattern))
+    for stale in snapshots[:-keep]:
+        try:
+            stale.unlink()
+        except OSError:
+            logger.debug("Could not prune old backup %s", stale)
+
+
+async def backup(keep: int | None = None) -> str | None:
+    """Snapshot the database into BACKUP_DIR. Returns the path, or None on failure.
+
+    Uses SQLite's online backup API rather than copying the file: a plain copy of
+    a live database can capture a half-written transaction, whereas this is safe
+    to run while the bot is serving traffic.
+    """
+    keep = BACKUP_KEEP if keep is None else keep
+    source = Path(DB_PATH)
+    if not source.exists():
+        logger.warning("Nothing to back up — no database at %s", source)
+        return None
+
+    directory = Path(BACKUP_DIR)
+    # Microsecond precision, so two snapshots in the same second (two quick
+    # /backup runs) can't overwrite each other. The fixed-width numeric stamp
+    # also means sorting these names sorts them chronologically, which is what
+    # _prune_backups relies on to find the oldest.
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
+    destination = directory / f"{source.stem}-{stamp}.db"
+
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        async with aiosqlite.connect(DB_PATH) as src:
+            async with aiosqlite.connect(destination) as dst:
+                await src.backup(dst)
+    except Exception:
+        logger.exception("Database backup failed")
+        return None
+
+    _prune_backups(directory, f"{source.stem}-*.db", keep)
+    return str(destination)

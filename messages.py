@@ -402,3 +402,19 @@ GATE_STATS = (
 GATE_LIST_EMPTY = "No alumni registrations via the gate yet."
 GATE_LIST_HEADER = "🎓 Alumni-gate registrations ({count}):"
 GATE_LIST_ENTRY = "{idx}. {full_name}{username_part}"
+
+
+# ── Operations ──────────────────────────────────────────────────────────────────
+# Sent to admins when a handler raises. Throttled — see bot.on_error.
+ADMIN_ERROR = (
+    "🔴 <b>Bot hit an error</b>{where}\n\n"
+    "<pre>{detail}</pre>\n"
+    "Further alerts are muted for {cooldown} min so a repeating fault can't "
+    "flood you. Check the logs for the full picture."
+)
+
+BACKUP_DONE = "💾 Database snapshot saved:\n<code>{path}</code>"
+
+BACKUP_FAILED = (
+    "⚠️ Backup failed — check the logs. The bot is still running normally."
+)
