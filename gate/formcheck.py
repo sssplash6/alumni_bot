@@ -27,6 +27,22 @@ logger = logging.getLogger(__name__)
 _API = "https://api.airtable.com/v0"
 _TIMEOUT = 15.0
 
+# Characters that would break out of the `{field}` reference in a formula. The
+# field name is operator-supplied, so a stray one of these would 422 every
+# request forever — better to refuse loudly at the boundary.
+_UNSAFE_FIELD_CHARS = ("{", "}", "'", '"', "\\")
+
+
+def _field_name_safe(name: str) -> bool:
+    """Whether a configured field name can be embedded in a formula.
+
+    Also rejects raw field IDs: filterByFormula accepts field *names* only, so a
+    `fld…` id silently matches nothing rather than erroring.
+    """
+    if not name or any(c in name for c in _UNSAFE_FIELD_CHARS):
+        return False
+    return not (name.startswith("fld") and len(name) == 17)
+
 
 def _headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {settings.AIRTABLE_TOKEN}"}
@@ -35,6 +51,38 @@ def _headers() -> dict[str, str]:
 def _table_url() -> str:
     # The table name/id sits in the path and may contain spaces or slashes.
     return f"{_API}/{settings.AIRTABLE_BASE_ID}/{quote(settings.AIRTABLE_TABLE, safe='')}"
+
+
+def _log_http_hint(resp: "httpx.Response") -> None:
+    """Turn a failing status into a specific log line.
+
+    Callers collapse every failure into "couldn't verify", which is the right
+    behaviour for students but means a bad token, a missing field and a quota
+    wall all look identical from the outside. The log is the only place the
+    difference is recoverable, so make it say which one it was.
+    """
+    if resp.status_code < 400:
+        return
+    hints = {
+        401: "GATE_AIRTABLE_TOKEN is invalid or revoked.",
+        403: "Token lacks data.records:read, or this base isn't in its Access list.",
+        404: "GATE_AIRTABLE_BASE_ID or GATE_AIRTABLE_TABLE is wrong.",
+        422: (
+            "Airtable rejected the request — usually a field name that doesn't "
+            "exist (check GATE_AIRTABLE_TG_FIELD / _NAME_FIELD / _DONE_FIELD "
+            "against the table, including exact capitalisation)."
+        ),
+        429: (
+            "Rate limited or the workspace's monthly API allowance is exhausted. "
+            "Until it resets, nobody can be verified."
+        ),
+    }
+    logger.error(
+        "Airtable returned HTTP %d: %s Body: %.300s",
+        resp.status_code,
+        hints.get(resp.status_code, "Unexpected status."),
+        resp.text,
+    )
 
 
 def _wanted_fields() -> list[str]:
@@ -58,6 +106,10 @@ def _is_complete(fields: dict) -> bool:
     value = fields.get(settings.AIRTABLE_DONE_FIELD)
     if isinstance(value, str):
         return bool(value.strip())
+    # A numeric 0 is a real answer, so it counts as filled in. `0 in (…, False)`
+    # is True because 0 == False, hence the explicit numeric case.
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return True
     return value not in (None, "", [], {}, False)
 
 
@@ -77,14 +129,30 @@ async def lookup(tg_id: int) -> dict | None:
     """
     if not settings.airtable_ready():
         return None
+    if not _field_name_safe(settings.AIRTABLE_TG_FIELD):
+        logger.error(
+            "GATE_AIRTABLE_TG_FIELD=%r can't be used in a formula — it must be the "
+            "field's NAME (not a fld… id) and must not contain { } ' \" or \\",
+            settings.AIRTABLE_TG_FIELD,
+        )
+        return None
 
-    # `{field}&''` coerces the value to text so the match works whether the
-    # Airtable field is a text or a number field.
-    formula = "{%s}&''='%s'" % (settings.AIRTABLE_TG_FIELD, str(tg_id))
-    params = {"filterByFormula": formula, "maxRecords": "1"}
+    # `{field}&''` coerces the stored value to text so the match works whether the
+    # Airtable field is a text or a number field. int() keeps the interpolation
+    # safe even if a caller passes something looser than the annotation promises.
+    formula = "{%s}&''='%d'" % (settings.AIRTABLE_TG_FIELD, int(tg_id))
+    params: dict[str, str] = {"filterByFormula": formula}
+    # Normally one row per person, so cap the response. With a "done" field
+    # configured we must look at every match: someone who submitted twice may
+    # have an incomplete earlier row, and inspecting only the first would leave
+    # them unverifiable forever.
+    if not settings.AIRTABLE_DONE_FIELD:
+        params["maxRecords"] = "1"
+
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             resp = await client.get(_table_url(), headers=_headers(), params=params)
+            _log_http_hint(resp)
             resp.raise_for_status()
             records = resp.json().get("records", [])
     except Exception:
@@ -93,8 +161,13 @@ async def lookup(tg_id: int) -> dict | None:
 
     if not records:
         return {"complete": False, "name": None}
-    fields = records[0].get("fields", {})
-    return {"complete": _is_complete(fields), "name": _name_from(fields)}
+
+    # Any complete submission counts; fall back to the first row for the name.
+    for record in records:
+        fields = record.get("fields", {})
+        if _is_complete(fields):
+            return {"complete": True, "name": _name_from(fields)}
+    return {"complete": False, "name": _name_from(records[0].get("fields", {}))}
 
 
 async def fetch_completed() -> dict[str, str | None] | None:
@@ -117,6 +190,11 @@ async def fetch_completed() -> dict[str, str | None] | None:
                 if offset:
                     params.append(("offset", offset))
                 resp = await client.get(_table_url(), headers=_headers(), params=params)
+                # Note the asymmetry worth knowing when debugging: this pass
+                # names fields explicitly, so a typo in the name/done field 422s
+                # every poll while lookup() (which sends no fields[]) keeps
+                # working — button users get in, waiters never do.
+                _log_http_hint(resp)
                 resp.raise_for_status()
                 data = resp.json()
                 for record in data.get("records", []):
@@ -144,5 +222,10 @@ def personalized_form_url(tg_id: int) -> str | None:
     if not settings.FORM_URL:
         return None
     field = quote_plus(settings.AIRTABLE_TG_FIELD)
-    sep = "&" if "?" in settings.FORM_URL else "?"
-    return f"{settings.FORM_URL}{sep}prefill_{field}={tg_id}&hide_{field}=true"
+
+    # Params must go before any #fragment, or they land inside it and Airtable
+    # never sees them — the field would show up blank and unhidden on the form.
+    base, _, fragment = settings.FORM_URL.partition("#")
+    sep = "&" if "?" in base else "?"
+    url = f"{base}{sep}prefill_{field}={int(tg_id)}&hide_{field}=true"
+    return f"{url}#{fragment}" if fragment else url
