@@ -23,6 +23,7 @@ from telegram.ext import (
 )
 
 import database as db
+import gate
 import messages as msg
 from config import ADMIN_IDS, BACKUP_INTERVAL_HOURS, BACKUP_KEEP, BOT_TOKEN
 from matcher import run_matching
@@ -145,16 +146,24 @@ def _main_kb(is_open: bool) -> ReplyKeyboardMarkup:
             [KeyboardButton(msg.BTN_MENTOR), KeyboardButton(msg.BTN_MENTEE)],
             [KeyboardButton(msg.BTN_APF)],
             [KeyboardButton(msg.BTN_ELYSIUM)],
+            [KeyboardButton(gate.MENU_BUTTON)],
         ]
     else:
         rows = [
             [KeyboardButton(msg.BTN_APF)],
             [KeyboardButton(msg.BTN_ELYSIUM)],
+            [KeyboardButton(gate.MENU_BUTTON)],
         ]
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # Arriving via the gate's group-nudge deep link (/start alumni) — hand
+    # straight over to onboarding instead of showing the main menu.
+    if context.args and context.args[0] == gate.START_PAYLOAD:
+        await gate.start_onboarding(update, context)
+        return
+
     is_open = await db.is_applications_open()
     await update.message.reply_text(
         msg.START_OPEN if is_open else msg.START_CLOSED,
@@ -1190,6 +1199,12 @@ def build_app() -> Application:
     app.add_handler(CallbackQueryHandler(review_decision, pattern=r"^review:"))
 
     app.add_handler(CommandHandler("backup", backup_command, filters=_private))
+
+    # The Alumni Gate goes last: its private-message handlers match broadly, so
+    # registering them after every ConversationHandler above means an
+    # in-progress conversation always wins.
+    gate.register(app)
+
     app.add_error_handler(on_error)
 
     # Periodic DB snapshots. The first runs shortly after boot so there's always

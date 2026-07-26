@@ -4,6 +4,7 @@ import logging
 
 from telegram import Update
 
+import gate
 from bot import build_app
 from database import init_db
 
@@ -15,6 +16,8 @@ logging.basicConfig(
 
 async def main() -> None:
     await init_db()
+    # The gate owns its own tables, so it creates them itself.
+    await gate.init_schema()
     app = build_app()
     await app.initialize()
     await app.start()
