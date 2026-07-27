@@ -47,6 +47,15 @@ async def init_schema() -> None:
                 updated_at    TEXT NOT NULL
             )
         """)
+        # Which monitored group we last saw this person in, so a follow-up nudge
+        # goes to the group they're actually in rather than all of them. Added
+        # after the first release, hence the tolerated "duplicate column" error.
+        try:
+            await db.execute(
+                "ALTER TABLE gate_users ADD COLUMN last_seen_chat_id INTEGER"
+            )
+        except aiosqlite.OperationalError:
+            pass
         await db.execute("""
             CREATE TABLE IF NOT EXISTS gate_announcements (
                 chat_id    INTEGER PRIMARY KEY,
@@ -76,6 +85,7 @@ async def _upsert(
     nudged_at: str | None = None,
     registered_at: str | None = None,
     invite_link: str | None = None,
+    last_seen_chat_id: int | None = None,
 ) -> None:
     """Insert or update a row, preserving existing non-null fields.
 
@@ -89,21 +99,26 @@ async def _upsert(
             """
             INSERT INTO gate_users (
                 user_id, username, first_name, full_name, status,
-                nudged_at, registered_at, invite_link, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                nudged_at, registered_at, invite_link, last_seen_chat_id, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id) DO UPDATE SET
                 username      = COALESCE(excluded.username, gate_users.username),
                 first_name    = COALESCE(excluded.first_name, gate_users.first_name),
                 full_name     = COALESCE(excluded.full_name, gate_users.full_name),
                 status        = excluded.status,
                 nudged_at     = COALESCE(excluded.nudged_at, gate_users.nudged_at),
+                -- note: mark_nudged always passes a fresh nudged_at, so a
+                -- re-tag advances it; other statuses pass None and preserve it.
                 registered_at = COALESCE(excluded.registered_at, gate_users.registered_at),
                 invite_link   = COALESCE(excluded.invite_link, gate_users.invite_link),
+                last_seen_chat_id = COALESCE(
+                    excluded.last_seen_chat_id, gate_users.last_seen_chat_id
+                ),
                 updated_at    = excluded.updated_at
             """,
             (
                 user_id, username, first_name, full_name, status,
-                nudged_at, registered_at, invite_link, now,
+                nudged_at, registered_at, invite_link, last_seen_chat_id, now,
             ),
         )
         await db.commit()
@@ -114,10 +129,24 @@ async def mark_member(user_id: int, username: str | None, first_name: str | None
     await _upsert(user_id, "member", username=username, first_name=first_name)
 
 
-async def mark_nudged(user_id: int, username: str | None, first_name: str | None) -> None:
-    """Record that we've tagged this user in a group."""
+async def mark_nudged(
+    user_id: int,
+    username: str | None,
+    first_name: str | None,
+    chat_id: int | None = None,
+) -> None:
+    """Record that we've tagged this user in a group.
+
+    ``nudged_at`` is overwritten on every tag (not COALESCEd) so it always means
+    "when we last chased this person", which is what the follow-up sweep reads.
+    """
     await _upsert(
-        user_id, "nudged", username=username, first_name=first_name, nudged_at=_now()
+        user_id,
+        "nudged",
+        username=username,
+        first_name=first_name,
+        nudged_at=_now(),
+        last_seen_chat_id=chat_id,
     )
 
 
@@ -173,6 +202,34 @@ async def awaiting_form_users() -> list[dict]:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT * FROM gate_users WHERE status = 'awaiting_form'"
+        )
+        return [dict(row) for row in await cur.fetchall()]
+
+
+async def stale_nudged_users(cutoff_iso: str, chat_id: int) -> list[dict]:
+    """People in one group who were tagged before ``cutoff_iso`` and still haven't
+    engaged — the follow-up sweep's targets.
+
+    Only status 'nudged' qualifies. Anyone who tapped a button has moved on to
+    'member' / 'awaiting_form' / 'awaiting_intro' / 'registered' and is left alone.
+
+    IMPORTANT: this can only return people the bot has an ID for — someone seen
+    joining or posting, or who tapped something. Telegram will not enumerate a
+    group's members, so a person who has never done any of those is invisible here
+    and cannot be tagged at all.
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            """
+            SELECT * FROM gate_users
+             WHERE status = 'nudged'
+               AND last_seen_chat_id = ?
+               AND nudged_at IS NOT NULL
+               AND nudged_at < ?
+             ORDER BY nudged_at
+            """,
+            (chat_id, cutoff_iso),
         )
         return [dict(row) for row in await cur.fetchall()]
 

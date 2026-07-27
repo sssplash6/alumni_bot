@@ -17,7 +17,7 @@ user ID:
 | --- | --- |
 | Someone **joins** a monitored group | New arrivals |
 | Someone **posts** in a monitored group (first time seen) | Active members |
-| Someone **taps the pinned announcement** | Everyone else — including people who were already in the group before the bot arrived and never post |
+| Someone **taps either button on the pinned announcement** | Everyone else — including people who were already in the group before the bot arrived and never post |
 
 The third trigger is what makes the cold-start case solvable. It also has a
 useful side effect: the tap means the bot has now *seen* that user, which is what
@@ -30,17 +30,27 @@ in the group rather than sent privately, and why every admin in `ADMIN_IDS` must
 
 ## The pinned announcement
 
-The bot posts one message per monitored group with a single button — *"✅ Check if
-I'm in the Alumni group"*:
+The bot posts one message per monitored group with two buttons:
 
-- **Already a member** → a private popup only they see. Nothing is posted, so the
-  group never learns who checked or who was already in.
-- **Not a member** → tagged publicly with a Register button, *and* the same tap
-  opens the bot so onboarding starts immediately.
+| Tap | What happens |
+| --- | --- |
+| **🎓 Join the Alumni group** | Opens the bot on their device, so onboarding starts on the same tap. Nothing is posted publicly — they volunteered, so a tag would be noise. |
+| **✅ I'm already in it** | Recorded as a member so they're never asked again — *if the check agrees*. |
+
+**Both buttons verify.** The second is deliberately not taken at face value:
+the tap already hands us the user ID, so confirming real membership costs one API
+call and no user effort. People tap "already in" to dismiss a message, and
+someone wrongly skipped is skipped permanently — which is precisely the person the
+gate exists to find. When the claim is contradicted they're told privately and
+pointed at the Join button, and **nothing is recorded**, so the next announcement
+reaches them again. The usual cause is a second Telegram account, or having left
+the group at some point.
+
+Neither outcome is ever posted in the group. Being publicly corrected would be
+worse than the problem.
 
 It re-posts every `GATE_ANNOUNCE_INTERVAL_DAYS` (default 5), deleting the previous
-one so exactly one is live. Repeat taps within a cycle don't produce repeat public
-tags. `/gate_announce` posts one immediately.
+one so exactly one is live. `/gate_announce` posts one immediately.
 
 The re-post job ticks hourly but only acts where the stored timestamp says a group
 is due, so restarting the bot can't spam a fresh announcement and the cadence
@@ -49,9 +59,12 @@ holds even if it restarts mid-cycle.
 ## Onboarding flow
 
 ```
-Pinned announcement ──tap "Check if I'm in"──▶ member? ──yes──▶ private popup, silent
-                                                 │ no
-Group nudge  ──tap "Register"──▶  onboarding ◀───┘
+Pinned announcement
+  ├─ "I'm already in it" ──▶ verify ──yes──▶ recorded, never asked again
+  │                             └────no──▶ told privately, nothing recorded
+  └─ "Join the Alumni group" ─▶ verify ──yes──▶ private popup, nothing posted
+                                    │ no
+Group nudge ──tap "Register"──▶ onboarding ◀───┘
                                      │
                         send the onboarding brief with buttons:
                         [Complete the form] [Read the doc] [I've completed the form ✅]

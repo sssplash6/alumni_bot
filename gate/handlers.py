@@ -6,12 +6,18 @@ event-driven rather than scan-based, on three triggers:
 
   * someone joins a monitored group;
   * someone posts in one for the first time we've seen;
-  * someone taps the pinned announcement's "check if I'm in" button.
+  * someone taps either button on the pinned announcement.
 
 The third exists because the first two can't see anyone who was already in a
 group before the bot arrived and who never posts. The tap supplies the one thing
 the membership check needs — the person's user ID — and it also means the bot has
 now *seen* them, which is what makes a tg://user mention resolve into a real ping.
+
+Both announcement buttons are verified against real membership, including the one
+that says "I'm already in it": the tap has already given us the ID, so a claim
+costs the same to confirm as to accept, and someone wrongly skipped is skipped for
+good. A cycle later, followup_job chases everyone still unengaged — but only those
+the bot has an ID for, which is a genuine ceiling, not an implementation gap.
 
 Onboarding is gated on an Airtable form submission and then on the person sending
 a real intro, at which point they get a personal single-use invite link.
@@ -19,6 +25,7 @@ a real intro, at which point they get a personal single-use invite link.
 Everything here is dormant unless settings.active() — the master switch plus a
 configured alumni group.
 """
+import asyncio
 import html
 import logging
 from datetime import datetime, timedelta, timezone
@@ -48,13 +55,20 @@ _private = filters.ChatType.PRIVATE
 
 # Callback data. Must not collide with the host bot's patterns.
 CHECK_FORM_CB = "gate:check_form"
-CHECK_ME_CB = "gate:check_me"
+JOIN_CB = "gate:join"
+ALREADY_CB = "gate:already"
 ENTER_CB = "start:alumnigate"
 
 # The announcement job wakes up far more often than the re-post interval and lets
 # the recorded timestamp decide whether a group is due, so the cadence holds even
 # across bot restarts.
 _ANNOUNCE_TICK_SECONDS = 3600
+
+# The follow-up sweep names people in batches: Telegram caps a group at roughly 20
+# messages a minute, so one message each would hit the flood limit and bury the
+# group, while a batched mention still notifies everyone named.
+_FOLLOWUP_BATCH = 8
+_FOLLOWUP_BATCH_PAUSE = 4.0
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────────
@@ -142,7 +156,9 @@ async def _post_nudge(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user) ->
         )
         return False
 
-    await db.mark_nudged(user.id, user.username, user.first_name)
+    # Record which group, so the follow-up sweep chases them where they actually
+    # are rather than in every monitored group.
+    await db.mark_nudged(user.id, user.username, user.first_name, chat_id)
     logger.info("Gate-nudged user %d (@%s) in chat %d", user.id, user.username, chat_id)
     return True
 
@@ -206,26 +222,17 @@ async def on_group_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 # ── Group announcement: the cold-start path ──────────────────────────────────────
 
 def _announce_markup() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [[InlineKeyboardButton(msg.GROUP_ANNOUNCE_BUTTON, callback_data=CHECK_ME_CB)]]
-    )
+    """Two buttons: one to start joining, one to declare you're already in.
 
-
-def _nudged_recently(row: dict | None) -> bool:
-    """True if this person was already tagged within the current cycle.
-
-    Repeat taps on the announcement shouldn't produce repeat public tags, but a
-    tag from a cycle ago is fair game again. With the re-post disabled we keep the
-    stricter "nudge once, ever" rule.
+    Both are verified against the real membership — see on_already_tap for why
+    the second is not taken at face value.
     """
-    when = _parse_ts(row["nudged_at"]) if row else None
-    if when is None:
-        return False
-    if settings.ANNOUNCE_INTERVAL_DAYS <= 0:
-        return True
-    return datetime.now(timezone.utc) - when < timedelta(
-        days=settings.ANNOUNCE_INTERVAL_DAYS
-    )
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(msg.GROUP_ANNOUNCE_JOIN_BUTTON, callback_data=JOIN_CB)],
+        [InlineKeyboardButton(
+            msg.GROUP_ANNOUNCE_ALREADY_BUTTON, callback_data=ALREADY_CB
+        )],
+    ])
 
 
 def _announcement_due(previous: dict | None) -> bool:
@@ -289,22 +296,120 @@ async def announce_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             await post_announcement(context, chat_id)
 
 
-async def on_check_me(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """The announcement's "Check if I'm in the Alumni group" button.
+async def followup_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """A cycle after being tagged, chase everyone who still hasn't engaged.
+
+    Targets are people with status 'nudged' whose tag is older than
+    GATE_ANNOUNCE_INTERVAL_DAYS — i.e. seen in a monitored group, told once, and
+    they've tapped nothing since.
+
+    HARD LIMIT worth understanding: this can only reach people the bot has a user
+    ID for. Telegram never enumerates a group's members, so someone who has never
+    joined, posted, or tapped since the bot arrived does not exist as far as this
+    sweep is concerned and cannot be tagged. The pinned announcement is what
+    converts those people into known IDs.
+    """
+    if not settings.active() or settings.ANNOUNCE_INTERVAL_DAYS <= 0:
+        return
+
+    cutoff = (
+        datetime.now(timezone.utc)
+        - timedelta(days=settings.ANNOUNCE_INTERVAL_DAYS)
+    ).isoformat()
+
+    for chat_id in settings.MONITORED_GROUP_IDS:
+        stale = await db.stale_nudged_users(cutoff, chat_id)
+        if not stale:
+            continue
+
+        logger.info(
+            "Follow-up sweep: chasing %d unengaged people in chat %d",
+            len(stale), chat_id,
+        )
+        button = InlineKeyboardButton(
+            msg.GROUP_NUDGE_BUTTON, url=_register_url(context.bot.username)
+        )
+
+        # Batch the mentions. Telegram caps a group at roughly 20 messages a
+        # minute, so one message per person would both hit the flood limit and
+        # bury the group. Everyone named still gets a real notification.
+        for start in range(0, len(stale), _FOLLOWUP_BATCH):
+            batch = stale[start:start + _FOLLOWUP_BATCH]
+            mentions = ", ".join(
+                _mention(row["user_id"], row["first_name"]) for row in batch
+            )
+            try:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=msg.GROUP_FOLLOWUP.format(mentions=mentions),
+                    parse_mode="HTML",
+                    reply_markup=InlineKeyboardMarkup([[button]]),
+                    disable_web_page_preview=True,
+                )
+            except Exception:
+                # Leave their nudged_at alone so the next sweep retries them.
+                logger.exception(
+                    "Follow-up batch failed in chat %d; will retry next sweep",
+                    chat_id,
+                )
+                break
+
+            for row in batch:
+                await db.mark_nudged(
+                    row["user_id"], row["username"], row["first_name"], chat_id
+                )
+            # Space the batches out, but don't idle after the last one.
+            if start + _FOLLOWUP_BATCH < len(stale):
+                await asyncio.sleep(_FOLLOWUP_BATCH_PAUSE)
+
+
+async def on_join_tap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """The announcement's "Join the Alumni group" button.
 
     Tapping is what makes the cold-start case work at all: the tap carries the
-    person's user ID, so the membership check can run on someone the bot has never
+    person's user ID, so membership can be checked for someone the bot has never
     otherwise seen.
 
-    Already a member -> private popup, nothing posted; the group never learns who
-                        checked or who was already in.
-    Not a member     -> tagged publicly (at most once per cycle) and the tap itself
-                        opens the bot, so onboarding starts immediately.
+    Already a member -> a private popup saying so; nothing is posted.
+    Not a member     -> the tap itself opens the bot, so onboarding starts
+                        immediately. Nothing is posted publicly either: they
+                        volunteered, so a public tag would only be noise.
     """
     query = update.callback_query
     user = query.from_user
-    chat = update.effective_chat
-    chat_id = chat.id if chat is not None else None
+
+    if not settings.active():
+        await query.answer(msg.CB_NOT_CONFIGURED, show_alert=True)
+        return
+
+    # Check anyway — someone who's already in shouldn't be walked through a form.
+    if await _is_member(context, user.id):
+        await db.mark_member(user.id, user.username, user.first_name)
+        await query.answer(msg.CB_ALREADY_MEMBER, show_alert=True)
+        return
+
+    # Answering with a t.me deep link opens the bot on their device, so the same
+    # tap that identified them also starts onboarding. start_onboarding re-hands
+    # an existing invite link if they've already been through this.
+    await query.answer(url=_register_url(context.bot.username))
+
+
+async def on_already_tap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """The announcement's "I'm already in it" button.
+
+    Deliberately NOT taken at face value. The tap hands us the user ID, and
+    checking real membership costs one API call and no user effort, so there's no
+    reason to accept a claim when we can confirm it. People tap this to dismiss a
+    message, and someone wrongly skipped is skipped for good — which is exactly
+    the person the gate exists to find.
+
+    Confirmed  -> recorded as a member, so they're never asked again.
+    Contradicted -> told privately, and pointed at the Join button. Nothing is
+                    posted publicly; being publicly corrected would be worse than
+                    the problem.
+    """
+    query = update.callback_query
+    user = query.from_user
 
     if not settings.active():
         await query.answer(msg.CB_NOT_CONFIGURED, show_alert=True)
@@ -315,22 +420,37 @@ async def on_check_me(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await query.answer(msg.CB_ALREADY_MEMBER, show_alert=True)
         return
 
-    row = await db.get_user(user.id)
-    onboarded = bool(row and row["status"] == "registered" and row["invite_link"])
+    # They believe they're in and they're not — most often a second Telegram
+    # account, or they left at some point. Correct it publicly so the claim can't
+    # be used to quietly opt out, and record the tag so the follow-up sweep counts
+    # them as already chased.
+    logger.info(
+        "User %d (@%s) claimed alumni membership but isn't in the group",
+        user.id, user.username,
+    )
+    chat = update.effective_chat
+    if chat is not None and chat.id in settings.MONITORED_GROUP_IDS:
+        button = InlineKeyboardButton(
+            msg.GROUP_NUDGE_BUTTON, url=_register_url(context.bot.username)
+        )
+        try:
+            await context.bot.send_message(
+                chat_id=chat.id,
+                text=msg.GROUP_NOT_ACTUALLY_MEMBER.format(
+                    mention=_mention(user.id, user.first_name)
+                ),
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([[button]]),
+                disable_web_page_preview=True,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to post false-claim correction for user %d", user.id
+            )
+        else:
+            await db.mark_nudged(user.id, user.username, user.first_name, chat.id)
 
-    # Someone who already finished onboarding doesn't need telling to register —
-    # opening the bot re-hands them their existing link.
-    if (
-        chat_id in settings.MONITORED_GROUP_IDS
-        and not onboarded
-        and not _nudged_recently(row)
-    ):
-        await _post_nudge(context, chat_id, user)
-
-    # Answering with a t.me deep link opens the bot on their device, so the same
-    # tap that identified them also starts onboarding. The public tag is the
-    # reminder and the record.
-    await query.answer(url=_register_url(context.bot.username))
+    await query.answer(msg.CB_NOT_ACTUALLY_MEMBER, show_alert=True)
 
 
 # ── Onboarding ──────────────────────────────────────────────────────────────────
@@ -666,7 +786,8 @@ def register(app: Application) -> None:
     )
     app.add_handler(CallbackQueryHandler(start_onboarding, pattern=f"^{ENTER_CB}$"))
     app.add_handler(CallbackQueryHandler(on_check_form, pattern=f"^{CHECK_FORM_CB}$"))
-    app.add_handler(CallbackQueryHandler(on_check_me, pattern=f"^{CHECK_ME_CB}$"))
+    app.add_handler(CallbackQueryHandler(on_join_tap, pattern=f"^{JOIN_CB}$"))
+    app.add_handler(CallbackQueryHandler(on_already_tap, pattern=f"^{ALREADY_CB}$"))
 
     app.add_handler(CommandHandler("gate_stats", stats_command, filters=_private))
     app.add_handler(CommandHandler("gate_list", list_command, filters=_private))
@@ -713,6 +834,12 @@ def register(app: Application) -> None:
         app.job_queue.run_repeating(
             announce_job, interval=_ANNOUNCE_TICK_SECONDS, first=60
         )
+        # Same hourly tick, offset so the two never post in the same minute. Each
+        # decides for itself whether anything is actually due.
+        app.job_queue.run_repeating(
+            followup_job, interval=_ANNOUNCE_TICK_SECONDS, first=900
+        )
         logger.info(
-            "Gate announcement re-posts every %d days", settings.ANNOUNCE_INTERVAL_DAYS
+            "Gate announcement re-posts every %d days; unengaged people are "
+            "chased on the same cycle", settings.ANNOUNCE_INTERVAL_DAYS
         )

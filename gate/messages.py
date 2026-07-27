@@ -25,20 +25,44 @@ GROUP_NUDGE_BUTTON = "Register for the Alumni group ▸"
 # The cold-start path: everyone already in the group taps one button. Members are
 # answered privately and never named publicly; non-members get tagged.
 GROUP_ANNOUNCE = (
-    "🎓 <b>Alumni group check</b>\n\n"
-    "Every Freshman Academy graduate belongs in the <b>official Alumni group</b> — "
-    "that's where introductions, opportunities and announcements land.\n\n"
-    "Not sure if you're in it? <b>Tap the button below.</b>\n\n"
-    "• Already in → nothing happens, and nobody else sees a thing.\n"
-    "• Not in yet → I'll walk you through joining.\n\n"
-    "<i>One tap. Takes a second.</i>"
+    "🎓 <b>The official Alumni group</b>\n\n"
+    "Every Freshman Academy graduate belongs in it — that's where introductions, "
+    "opportunities and announcements land.\n\n"
+    "<b>Not in it yet?</b> Tap <b>Join</b> and I'll walk you through it.\n"
+    "<b>Already in?</b> Tap the second button and I'll stop asking.\n\n"
+    "<i>Either way it's one tap, and nobody else sees your answer.</i>"
 )
-GROUP_ANNOUNCE_BUTTON = "✅ Check if I'm in the Alumni group"
+GROUP_ANNOUNCE_JOIN_BUTTON = "🎓 Join the Alumni group"
+GROUP_ANNOUNCE_ALREADY_BUTTON = "✅ I'm already in it"
 
-# Callback answers — shown as a private popup to the person who tapped, so the
-# group never learns who checked or who was already a member.
-CB_ALREADY_MEMBER = "✅ You're in the Alumni group — nothing to do. Nobody else saw this check."
+# Callback answers — a private popup only the person who tapped can see, so the
+# group never learns who tapped what.
+CB_ALREADY_MEMBER = "✅ Confirmed — you're in the Alumni group. I won't ask you again."
 CB_NOT_CONFIGURED = "⚙️ The Alumni group isn't set up yet. Try again later or contact an admin."
+
+# They said they're already in, but the membership check disagrees. Said gently:
+# the likeliest explanations are a second Telegram account or having left.
+CB_NOT_ACTUALLY_MEMBER = (
+    "Hmm — I can't find this account in the Alumni group. "
+    "Tap “Join the Alumni group” above and I'll sort you out."
+)
+
+# Posted in the group when someone claims membership they don't have.
+GROUP_NOT_ACTUALLY_MEMBER = (
+    "🤔 {mention} — I checked, and this account <b>isn't in the Alumni group</b> "
+    "yet!\n\n"
+    "If you're in it on another Telegram account, no problem — but this one needs "
+    "registering. Tap below. 🎓"
+)
+
+# The follow-up sweep, a cycle after the announcement: one message per batch of
+# people who still haven't engaged with either button.
+GROUP_FOLLOWUP = (
+    "⏰ <b>Still missing from the Alumni group</b>\n\n"
+    "{mentions}\n\n"
+    "You haven't joined yet — it takes about a minute. Tap below and I'll walk you "
+    "through it. 🎓"
+)
 
 # ── Private DM: onboarding ──────────────────────────────────────────────────────
 # The welcome + onboarding brief. The form and doc links, plus the "I've completed

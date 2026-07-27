@@ -151,7 +151,7 @@ def test_announcement_posts_and_pins(live):
     assert asyncio.run(gh.post_announcement(ctx, MONITORED)) is True
 
     markup = ctx.bot.send_message.await_args.kwargs["reply_markup"]
-    assert markup.inline_keyboard[0][0].callback_data == gh.CHECK_ME_CB
+    assert markup.inline_keyboard[0][0].callback_data == gh.JOIN_CB
     ctx.bot.pin_chat_message.assert_awaited_once()
     ctx.bot.delete_message.assert_not_awaited()  # nothing to clear on first post
     assert asyncio.run(gdb.get_announcement(MONITORED))["message_id"] == 1000
@@ -176,55 +176,85 @@ def test_announce_job_skips_groups_not_due(live):
     ctx.bot.send_message.assert_not_awaited()
 
 
-def test_check_me_member_is_silent_in_group(live):
+def test_announcement_offers_both_buttons(live):
+    ctx = _ctx(member_status=None)
+
+    asyncio.run(gh.post_announcement(ctx, MONITORED))
+
+    markup = ctx.bot.send_message.await_args.kwargs["reply_markup"]
+    data = [b.callback_data for row in markup.inline_keyboard for b in row]
+    assert data == [gh.JOIN_CB, gh.ALREADY_CB]
+
+
+def test_join_tap_by_non_member_opens_the_bot_silently(live):
+    """They volunteered, so there's nothing to tag them about publicly."""
+    ctx = _ctx(member_status=None)
+    update, query = _group_tap()
+
+    asyncio.run(gh.on_join_tap(update, ctx))
+
+    ctx.bot.send_message.assert_not_awaited()
+    assert query.answer.await_args.kwargs["url"].endswith("?start=alumni")
+
+
+def test_join_tap_by_existing_member_says_so(live):
     ctx = _ctx(member_status="member")
     update, query = _group_tap()
 
-    asyncio.run(gh.on_check_me(update, ctx))
+    asyncio.run(gh.on_join_tap(update, ctx))
 
-    # Nothing posted publicly — only a private popup to the tapper.
     ctx.bot.send_message.assert_not_awaited()
     assert query.answer.await_args.kwargs.get("show_alert") is True
     assert asyncio.run(gdb.get_user(555))["status"] == "member"
 
 
-def test_check_me_non_member_tagged_and_deep_linked(live):
-    ctx = _ctx(member_status=None)
+def test_already_tap_is_verified_not_trusted(live):
+    """The claim is checked. Someone who taps this to dismiss the message, but
+    isn't actually in the group, is corrected rather than quietly skipped."""
+    ctx = _ctx(member_status=None)   # not actually in the alumni group
     update, query = _group_tap()
 
-    asyncio.run(gh.on_check_me(update, ctx))
+    asyncio.run(gh.on_already_tap(update, ctx))
 
-    kwargs = ctx.bot.send_message.await_args.kwargs
-    assert kwargs["chat_id"] == MONITORED
-    assert "tg://user?id=555" in kwargs["text"]
+    # A private popup for them...
+    text = query.answer.await_args.args[0]
+    assert "can't find" in text.lower()
+    assert query.answer.await_args.kwargs.get("show_alert") is True
+    # ...and recorded as chased, never as a member.
     assert asyncio.run(gdb.get_user(555))["status"] == "nudged"
-    # The tap itself opens the bot, so onboarding starts right away.
-    assert query.answer.await_args.kwargs["url"].endswith("?start=alumni")
 
 
-def test_check_me_repeat_tap_does_not_retag_within_cycle(live):
-    ctx = _ctx(member_status=None)
+def test_already_tap_when_true_records_membership(live):
+    ctx = _ctx(member_status="member")
     update, query = _group_tap()
 
-    asyncio.run(gh.on_check_me(update, ctx))
-    ctx.bot.send_message.reset_mock()
-    asyncio.run(gh.on_check_me(update, ctx))
+    asyncio.run(gh.on_already_tap(update, ctx))
 
+    assert asyncio.run(gdb.get_user(555))["status"] == "member"
     ctx.bot.send_message.assert_not_awaited()
-    assert query.answer.await_args.kwargs["url"].endswith("?start=alumni")
 
 
-def test_check_me_registered_user_is_not_retagged(live):
-    asyncio.run(
-        gdb.mark_registered(555, "alice", "Alice", "Ada", "https://t.me/+old")
-    )
-    ctx = _ctx(member_status=None)
-    update, query = _group_tap()
+def test_already_tap_accepts_every_present_status(live):
+    """Creator, admin and restricted all count as being in the group."""
+    for status in ("creator", "administrator", "member", "restricted"):
+        ctx = _ctx(member_status=status)
+        update, _ = _group_tap(user=_user(uid=600))
+        asyncio.run(gh.on_already_tap(update, ctx))
+        assert asyncio.run(gdb.get_user(600))["status"] == "member", status
 
-    asyncio.run(gh.on_check_me(update, ctx))
 
-    ctx.bot.send_message.assert_not_awaited()
-    assert query.answer.await_args.kwargs["url"].endswith("?start=alumni")
+def test_taps_are_inert_while_dormant(tmp_path):
+    path = str(tmp_path / "test.db")
+    with patch("config.DB_PATH", path), patch("gate.db.DB_PATH", path), patch.multiple(
+        settings, LIVE=False, GROUP_ID=ALUMNI_GROUP, MONITORED_GROUP_IDS=[MONITORED]
+    ):
+        asyncio.run(gdb.init_schema())
+        for handler in (gh.on_join_tap, gh.on_already_tap):
+            ctx = _ctx(member_status="member")
+            update, query = _group_tap()
+            asyncio.run(handler(update, ctx))
+            assert asyncio.run(gdb.get_user(555)) is None
+            ctx.bot.send_message.assert_not_awaited()
 
 
 # ── Onboarding ──────────────────────────────────────────────────────────────────
@@ -497,7 +527,8 @@ def test_existing_alumni_member_never_touches_airtable(live):
         asyncio.run(gh.start_onboarding(update, ctx))
 
         tap_update, query = _group_tap()
-        asyncio.run(gh.on_check_me(tap_update, ctx))
+        asyncio.run(gh.on_join_tap(tap_update, ctx))
+        asyncio.run(gh.on_already_tap(tap_update, ctx))
 
         cb_reply = AsyncMock()
         cb = SimpleNamespace(answer=AsyncMock(), message=SimpleNamespace(reply_text=cb_reply))
@@ -508,4 +539,140 @@ def test_existing_alumni_member_never_touches_airtable(live):
     assert called == [], "an existing member should never trigger an Airtable call"
     assert asyncio.run(gdb.get_user(555))["status"] == "member"
     # And nothing was posted publicly about them.
+    ctx.bot.send_message.assert_not_awaited()
+
+
+# ── False membership claims are corrected publicly ──────────────────────────────
+
+def test_false_already_claim_is_corrected_in_the_group(live):
+    ctx = _ctx(member_status=None)   # not actually in the alumni group
+    update, query = _group_tap()
+
+    asyncio.run(gh.on_already_tap(update, ctx))
+
+    kwargs = ctx.bot.send_message.await_args.kwargs
+    assert kwargs["chat_id"] == MONITORED
+    assert "tg://user?id=555" in kwargs["text"]
+    assert "isn't in the alumni group" in kwargs["text"].lower()
+    # Recorded as chased, in the right group, so the sweep doesn't double up.
+    row = asyncio.run(gdb.get_user(555))
+    assert row["status"] == "nudged"
+    assert row["last_seen_chat_id"] == MONITORED
+    query.answer.assert_awaited_once()
+
+
+def test_true_already_claim_posts_nothing(live):
+    ctx = _ctx(member_status="member")
+    update, _ = _group_tap()
+
+    asyncio.run(gh.on_already_tap(update, ctx))
+
+    ctx.bot.send_message.assert_not_awaited()
+
+
+# ── The follow-up sweep ─────────────────────────────────────────────────────────
+
+def _age_nudge(user_id, days, chat_id=MONITORED):
+    """Backdate someone's nudge so the sweep considers them stale."""
+    import aiosqlite
+    from datetime import datetime, timedelta, timezone
+
+    when = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+    async def run():
+        async with aiosqlite.connect(gdb.DB_PATH) as db:
+            await db.execute(
+                "UPDATE gate_users SET nudged_at = ?, last_seen_chat_id = ? "
+                "WHERE user_id = ?",
+                (when, chat_id, user_id),
+            )
+            await db.commit()
+    asyncio.run(run())
+
+
+def test_followup_chases_only_the_unengaged(live):
+    # Tagged 6 days ago, never tapped anything -> chase.
+    asyncio.run(gdb.mark_nudged(111, "one", "One", MONITORED))
+    _age_nudge(111, 6)
+    # Tagged 6 days ago but has since started onboarding -> leave alone.
+    asyncio.run(gdb.mark_nudged(222, "two", "Two", MONITORED))
+    _age_nudge(222, 6)
+    asyncio.run(gdb.mark_awaiting_form(222, "two", "Two"))
+    # Tagged yesterday -> too recent.
+    asyncio.run(gdb.mark_nudged(333, "three", "Three", MONITORED))
+    _age_nudge(333, 1)
+    ctx = _ctx(member_status=None)
+
+    asyncio.run(gh.followup_job(ctx))
+
+    ctx.bot.send_message.assert_awaited_once()
+    text = ctx.bot.send_message.await_args.kwargs["text"]
+    assert "tg://user?id=111" in text
+    assert "tg://user?id=222" not in text, "someone mid-onboarding must be left alone"
+    assert "tg://user?id=333" not in text, "recently tagged must be left alone"
+
+
+def test_followup_advances_the_timestamp_so_it_does_not_repeat(live):
+    asyncio.run(gdb.mark_nudged(111, "one", "One", MONITORED))
+    _age_nudge(111, 6)
+    ctx = _ctx(member_status=None)
+
+    asyncio.run(gh.followup_job(ctx))
+    ctx.bot.send_message.reset_mock()
+    asyncio.run(gh.followup_job(ctx))
+
+    ctx.bot.send_message.assert_not_awaited()
+
+
+def test_followup_batches_mentions(live, monkeypatch):
+    """One message per person would hit Telegram's ~20/min group flood limit."""
+    monkeypatch.setattr(gh, "_FOLLOWUP_BATCH_PAUSE", 0)
+    for uid in range(600, 620):        # 20 people
+        asyncio.run(gdb.mark_nudged(uid, f"u{uid}", f"U{uid}", MONITORED))
+        _age_nudge(uid, 6)
+    ctx = _ctx(member_status=None)
+
+    asyncio.run(gh.followup_job(ctx))
+
+    # 20 people in batches of 8 -> 3 messages, not 20.
+    assert ctx.bot.send_message.await_count == 3
+    named = "".join(
+        c.kwargs["text"] for c in ctx.bot.send_message.await_args_list
+    )
+    for uid in range(600, 620):
+        assert f"tg://user?id={uid}" in named
+
+
+def test_followup_ignores_other_groups(live):
+    asyncio.run(gdb.mark_nudged(111, "one", "One", -100777))
+    _age_nudge(111, 6, chat_id=-100777)
+    ctx = _ctx(member_status=None)
+
+    asyncio.run(gh.followup_job(ctx))
+
+    ctx.bot.send_message.assert_not_awaited()
+
+
+def test_followup_retries_after_a_send_failure(live):
+    asyncio.run(gdb.mark_nudged(111, "one", "One", MONITORED))
+    _age_nudge(111, 6)
+    ctx = _ctx(member_status=None)
+    ctx.bot.send_message = AsyncMock(side_effect=Exception("flood wait"))
+
+    asyncio.run(gh.followup_job(ctx))
+
+    # nudged_at untouched, so the next sweep picks them up again.
+    ctx.bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+    asyncio.run(gh.followup_job(ctx))
+    ctx.bot.send_message.assert_awaited_once()
+
+
+def test_followup_dormant_when_interval_disabled(live, monkeypatch):
+    asyncio.run(gdb.mark_nudged(111, "one", "One", MONITORED))
+    _age_nudge(111, 60)
+    monkeypatch.setattr(settings, "ANNOUNCE_INTERVAL_DAYS", 0)
+    ctx = _ctx(member_status=None)
+
+    asyncio.run(gh.followup_job(ctx))
+
     ctx.bot.send_message.assert_not_awaited()
