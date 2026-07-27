@@ -174,9 +174,32 @@ LIST_HEADER = "🎓 Alumni-gate registrations ({count}):"
 LIST_ENTRY = "{idx}. {full_name}{username_part}"
 
 ANNOUNCE_NO_TARGETS = (
-    "⚙️ No monitored groups configured yet — set <code>GATE_MONITORED_GROUP_IDS</code> "
-    "in <code>.env</code> and restart me first."
+    "⚙️ I'm not watching any groups yet. Add me to a group as an admin, then run "
+    "<code>/gate_watch</code> in it."
 )
+
+# ── Managing the watched groups ─────────────────────────────────────────────────
+WATCH_ADDED = (
+    "👀 Now watching <b>{title}</b>\n"
+    "<code>{chat_id}</code>\n\n"
+    "I'll check people here against the Alumni group. Run "
+    "<code>/gate_announce</code> to post the join message."
+)
+WATCH_ALREADY = "👀 Already watching <b>{title}</b> — nothing to change."
+WATCH_NOT_A_GROUP = "This only works inside a group. Run it in the group you want watched."
+WATCH_IS_ALUMNI_GROUP = (
+    "🚫 This is the Alumni group itself — the destination, not a group to watch. "
+    "Watching it would nudge people about a group they're already in."
+)
+UNWATCH_DONE = "🚫 Stopped watching <b>{title}</b>. Existing records are kept."
+UNWATCH_NOT_WATCHED = "I wasn't watching this group."
+
+GROUPS_EMPTY = (
+    "Not watching any groups yet. Add me to one as an admin and run "
+    "<code>/gate_watch</code> there."
+)
+GROUPS_HEADER = "👀 <b>Watching {count} group(s)</b>\n\nDestination: <code>{destination}</code>"
+GROUPS_ENTRY = "• {title} — <code>{chat_id}</code>"
 
 ANNOUNCE_DORMANT = (
     "⚙️ The gate is dormant. Set <code>GATE_LIVE=true</code> (and "

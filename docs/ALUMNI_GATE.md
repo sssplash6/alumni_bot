@@ -122,13 +122,32 @@ full name captured from the Airtable submission is kept on the roster.
 ## Commands
 
 - `/alumni` or the **🎓 Join the Alumni Group** menu button — begin onboarding
+- `/gate_watch` — (admins, in a group) start watching that group
+- `/gate_unwatch` — (admins, in a group) stop watching it
+- `/gate_groups` — (admins) list the watched groups and the destination
 - `/gate_announce` — (admins) post/re-post the pinned announcement
 - `/gate_stats` — (admins) counts per status
 - `/gate_list` — (admins) the roster of everyone admitted through the gate
 
 ## Configuration
 
-Every setting is an environment variable prefixed `GATE_`, documented in
+Two different things, easily confused:
+
+- **`GATE_GROUP_ID` — the destination.** The one alumni group everyone should end
+  up in. Stable; set once. The bot must be an admin here.
+- **The watched groups — the sources.** The groups checked for people missing from
+  the destination. These change often, so they are **not** configuration: they
+  live in the database and are managed live with `/gate_watch` in a group,
+  `/gate_unwatch`, and `/gate_groups`. No restart, no config edit.
+
+`GATE_MONITORED_GROUP_IDS` still exists as a one-time bootstrap — anything listed
+there is copied into the database at startup. Removing an id from it does not
+unwatch the group; use `/gate_unwatch`.
+
+Watching the destination group is refused: it would nudge people about a group
+they are already in.
+
+Everything else is an environment variable prefixed `GATE_`, documented in
 `.env.example` and defined in `gate/settings.py`. The gate stays **dormant** until
 `GATE_LIVE=true` *and* `GATE_GROUP_ID` is set: the menu button says "coming soon",
 detection does nothing, and no jobs are scheduled.
@@ -141,7 +160,8 @@ detection does nothing, and no jobs are scheduled.
 3. **Privacy mode off** via BotFather `/setprivacy` → Disable, so the bot can see
    ordinary messages for the "first time they post" trigger.
 4. Airtable block filled in and verified with `scripts/check_airtable.py`.
-5. `GATE_GROUP_ID` and `GATE_MONITORED_GROUP_IDS` set, then `GATE_LIVE=true`.
+5. `GATE_GROUP_ID` set and `GATE_LIVE=true`, then `/gate_watch` in each group
+   you want watched.
 6. Restart, then **tap the announcement button yourself first.**
 
 Step 6 matters. Membership checks **fail closed**: if the bot can't read the

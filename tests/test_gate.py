@@ -28,7 +28,13 @@ def live(tmp_path):
         INTRO_MIN_WORDS=50,
     ):
         asyncio.run(gdb.init_schema())
-        yield path
+        # The watched-group list lives in the DB and is cached in memory, so it
+        # has to be primed the same way startup does it.
+        asyncio.run(gh.load_monitored([MONITORED]))
+        try:
+            yield path
+        finally:
+            gh._monitored = set()
 
 
 def _user(uid=555, username="alice", first="Alice", is_bot=False):
@@ -676,3 +682,126 @@ def test_followup_dormant_when_interval_disabled(live, monkeypatch):
     asyncio.run(gh.followup_job(ctx))
 
     ctx.bot.send_message.assert_not_awaited()
+
+
+# ── Watching groups is managed live, not via config ─────────────────────────────
+
+def _group_cmd(chat_id=-100555, title="Cohort 2026", chat_type="supergroup", admin=True):
+    reply = AsyncMock()
+    return SimpleNamespace(
+        effective_chat=SimpleNamespace(id=chat_id, type=chat_type, title=title),
+        effective_user=SimpleNamespace(id=1 if admin else 999999),
+        effective_message=SimpleNamespace(reply_text=reply),
+        message=SimpleNamespace(reply_text=reply),
+    ), reply
+
+
+def test_watch_adds_a_group_without_a_restart(live):
+    update, reply = _group_cmd()
+
+    asyncio.run(gh.watch_command(update, _ctx()))
+
+    assert -100555 in gh.monitored_ids()
+    assert gh.is_monitored(-100555)
+    assert "-100555" in reply.await_args.args[0]
+    # And it survives a cache reload, i.e. it was persisted.
+    asyncio.run(gh.refresh_monitored())
+    assert gh.is_monitored(-100555)
+
+
+def test_watched_group_is_immediately_active(live):
+    """The whole point: a newly watched group works with no restart."""
+    ctx = _ctx(member_status=None)
+    update, _ = _group_cmd(chat_id=-100555)
+    asyncio.run(gh.watch_command(update, ctx))
+    ctx.bot.send_message.reset_mock()
+
+    # A message in the new group now triggers detection.
+    msg_update = SimpleNamespace(
+        effective_chat=SimpleNamespace(id=-100555, type="supergroup"),
+        effective_user=_user(uid=777),
+    )
+    asyncio.run(gh.on_group_message(msg_update, ctx))
+
+    assert asyncio.run(gdb.get_user(777))["status"] == "nudged"
+    assert ctx.bot.send_message.await_args.kwargs["chat_id"] == -100555
+
+
+def test_watch_twice_is_idempotent(live):
+    update, reply = _group_cmd()
+    asyncio.run(gh.watch_command(update, _ctx()))
+    asyncio.run(gh.watch_command(update, _ctx()))
+
+    assert "already watching" in reply.await_args.args[0].lower()
+    assert len(asyncio.run(gdb.monitored_chats())) == 2  # the seed + this one
+
+
+def test_watch_refuses_the_alumni_group_itself(live):
+    update, reply = _group_cmd(chat_id=ALUMNI_GROUP, title="Alumni")
+
+    asyncio.run(gh.watch_command(update, _ctx()))
+
+    assert not gh.is_monitored(ALUMNI_GROUP)
+    assert "destination" in reply.await_args.args[0].lower()
+
+
+def test_watch_refuses_a_private_chat(live):
+    update, reply = _group_cmd(chat_type="private", title=None)
+
+    asyncio.run(gh.watch_command(update, _ctx()))
+
+    assert "inside a group" in reply.await_args.args[0].lower()
+
+
+def test_watch_ignores_non_admins(live):
+    update, reply = _group_cmd(admin=False)
+
+    asyncio.run(gh.watch_command(update, _ctx()))
+
+    assert not gh.is_monitored(-100555)
+    reply.assert_not_awaited()
+
+
+def test_unwatch_stops_detection(live):
+    ctx = _ctx(member_status=None)
+    update, reply = _group_cmd(chat_id=MONITORED, title="Watched")
+
+    asyncio.run(gh.unwatch_command(update, ctx))
+
+    assert not gh.is_monitored(MONITORED)
+    msg_update = SimpleNamespace(
+        effective_chat=SimpleNamespace(id=MONITORED, type="supergroup"),
+        effective_user=_user(uid=888),
+    )
+    asyncio.run(gh.on_group_message(msg_update, ctx))
+    assert asyncio.run(gdb.get_user(888)) is None
+
+
+def test_unwatch_a_group_never_watched(live):
+    update, reply = _group_cmd(chat_id=-100999123)
+
+    asyncio.run(gh.unwatch_command(update, _ctx()))
+
+    assert "wasn't watching" in reply.await_args.args[0].lower()
+
+
+def test_env_seed_is_a_bootstrap_only(live):
+    """The env var seeds the DB once; after that the DB is the source of truth."""
+    asyncio.run(gh.load_monitored([-100555, -100666]))
+    assert {-100555, -100666} <= gh.monitored_ids()
+
+    # Re-seeding with a shorter list must not unwatch anything.
+    asyncio.run(gh.load_monitored([-100555]))
+    assert -100666 in gh.monitored_ids()
+
+
+def test_groups_command_lists_what_is_watched(live):
+    update, reply = _group_cmd(chat_id=-100555)
+    asyncio.run(gh.watch_command(update, _ctx()))
+    dm, dm_reply = _group_cmd(chat_type="private")
+
+    asyncio.run(gh.groups_command(dm, _ctx()))
+
+    text = dm_reply.await_args.args[0]
+    assert "-100555" in text
+    assert str(ALUMNI_GROUP) in text     # the destination is shown too

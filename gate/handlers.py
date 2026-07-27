@@ -70,6 +70,42 @@ _ANNOUNCE_TICK_SECONDS = 3600
 _FOLLOWUP_BATCH = 8
 _FOLLOWUP_BATCH_PAUSE = 4.0
 
+# Which groups are being watched. Held in memory because it's consulted on every
+# group message, and refreshed whenever it changes — safe because exactly one
+# instance of this bot may run at a time (two would fight over getUpdates anyway).
+_monitored: set[int] = set()
+
+
+def monitored_ids() -> set[int]:
+    """The groups currently being watched."""
+    return set(_monitored)
+
+
+def is_monitored(chat_id: int | None) -> bool:
+    return chat_id is not None and chat_id in _monitored
+
+
+async def refresh_monitored() -> set[int]:
+    """Reload the watched-group cache from the database."""
+    global _monitored
+    _monitored = {row["chat_id"] for row in await db.monitored_chats()}
+    return set(_monitored)
+
+
+async def load_monitored(seed: list[int] | None = None) -> set[int]:
+    """Prime the cache at startup, seeding from GATE_MONITORED_GROUP_IDS.
+
+    The environment variable is a bootstrap only: anything listed there is copied
+    into the database once, after which the group list is managed live with
+    /gate_watch and /gate_unwatch. Removing an id from the variable does not
+    unwatch it — use /gate_unwatch.
+    """
+    for chat_id in settings.MONITORED_GROUP_IDS if seed is None else seed:
+        if chat_id == settings.GROUP_ID:
+            continue  # never watch the destination group
+        await db.add_monitored_chat(chat_id, None)
+    return await refresh_monitored()
+
 
 # ── Helpers ─────────────────────────────────────────────────────────────────────
 
@@ -207,14 +243,14 @@ async def on_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await db.mark_member(user.id, user.username, user.first_name)
         return
 
-    if chat_id in settings.MONITORED_GROUP_IDS:
+    if is_monitored(chat_id):
         await _process_user(context, chat_id, user)
 
 
 async def on_group_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """First-time posters in a monitored group get checked."""
     chat = update.effective_chat
-    if chat is None or chat.id not in settings.MONITORED_GROUP_IDS:
+    if chat is None or not is_monitored(chat.id):
         return
     await _process_user(context, chat.id, update.effective_user)
 
@@ -291,7 +327,7 @@ async def announce_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Re-post the announcement in any monitored group that's due one."""
     if not settings.active():
         return
-    for chat_id in settings.MONITORED_GROUP_IDS:
+    for chat_id in sorted(monitored_ids()):
         if _announcement_due(await db.get_announcement(chat_id)):
             await post_announcement(context, chat_id)
 
@@ -317,7 +353,7 @@ async def followup_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         - timedelta(days=settings.ANNOUNCE_INTERVAL_DAYS)
     ).isoformat()
 
-    for chat_id in settings.MONITORED_GROUP_IDS:
+    for chat_id in sorted(monitored_ids()):
         stale = await db.stale_nudged_users(cutoff, chat_id)
         if not stale:
             continue
@@ -429,7 +465,7 @@ async def on_already_tap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         user.id, user.username,
     )
     chat = update.effective_chat
-    if chat is not None and chat.id in settings.MONITORED_GROUP_IDS:
+    if chat is not None and is_monitored(chat.id):
         button = InlineKeyboardButton(
             msg.GROUP_NUDGE_BUTTON, url=_register_url(context.bot.username)
         )
@@ -726,6 +762,81 @@ async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text("\n".join(lines))
 
 
+async def watch_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Start watching the group this is run in (admins only).
+
+    Run in the group itself rather than taking an ID argument: you're already
+    there, and it can't be pointed at the wrong chat by a typo.
+    """
+    chat = update.effective_chat
+    user = update.effective_user
+    if user is None or not _is_admin(user.id):
+        return
+    if chat is None or chat.type not in ("group", "supergroup"):
+        await update.effective_message.reply_text(
+            msg.WATCH_NOT_A_GROUP, parse_mode="HTML"
+        )
+        return
+    if chat.id == settings.GROUP_ID:
+        await update.effective_message.reply_text(
+            msg.WATCH_IS_ALUMNI_GROUP, parse_mode="HTML"
+        )
+        return
+
+    title = chat.title or str(chat.id)
+    added = await db.add_monitored_chat(chat.id, chat.title)
+    await refresh_monitored()
+
+    template = msg.WATCH_ADDED if added else msg.WATCH_ALREADY
+    await update.effective_message.reply_text(
+        template.format(title=html.escape(title), chat_id=chat.id), parse_mode="HTML"
+    )
+    logger.info("Now watching chat %d (%s)", chat.id, title)
+
+
+async def unwatch_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Stop watching the group this is run in (admins only)."""
+    chat = update.effective_chat
+    user = update.effective_user
+    if user is None or not _is_admin(user.id):
+        return
+    if chat is None or chat.type not in ("group", "supergroup"):
+        await update.effective_message.reply_text(
+            msg.WATCH_NOT_A_GROUP, parse_mode="HTML"
+        )
+        return
+
+    removed = await db.remove_monitored_chat(chat.id)
+    await refresh_monitored()
+    template = msg.UNWATCH_DONE if removed else msg.UNWATCH_NOT_WATCHED
+    await update.effective_message.reply_text(
+        template.format(title=html.escape(chat.title or str(chat.id))),
+        parse_mode="HTML",
+    )
+    logger.info("Stopped watching chat %d", chat.id)
+
+
+async def groups_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """List the watched groups and the destination (admins only, DM)."""
+    if not _is_admin(update.effective_user.id):
+        return
+    chats = await db.monitored_chats()
+    if not chats:
+        await update.message.reply_text(msg.GROUPS_EMPTY, parse_mode="HTML")
+        return
+    lines = [
+        msg.GROUPS_HEADER.format(
+            count=len(chats), destination=settings.GROUP_ID or "not set"
+        ),
+        "",
+    ]
+    for row in chats:
+        lines.append(msg.GROUPS_ENTRY.format(
+            title=html.escape(row["title"] or "—"), chat_id=row["chat_id"]
+        ))
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+
 async def announce_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Post the announcement now, without waiting for the cycle (admins only).
 
@@ -750,8 +861,8 @@ async def announce_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     targets = (
         [chat.id]
-        if chat.id in settings.MONITORED_GROUP_IDS
-        else list(settings.MONITORED_GROUP_IDS)
+        if is_monitored(chat.id)
+        else sorted(monitored_ids())
     )
     if not targets:
         await update.effective_message.reply_text(
@@ -792,6 +903,9 @@ def register(app: Application) -> None:
     app.add_handler(CommandHandler("gate_stats", stats_command, filters=_private))
     app.add_handler(CommandHandler("gate_list", list_command, filters=_private))
     app.add_handler(CommandHandler("gate_announce", announce_command))
+    app.add_handler(CommandHandler("gate_watch", watch_command))
+    app.add_handler(CommandHandler("gate_unwatch", unwatch_command))
+    app.add_handler(CommandHandler("gate_groups", groups_command, filters=_private))
 
     app.add_handler(ChatMemberHandler(on_chat_member, ChatMemberHandler.CHAT_MEMBER))
     app.add_handler(
@@ -830,7 +944,7 @@ def register(app: Application) -> None:
             "Gate form poll scheduled every %d min", settings.POLL_INTERVAL_MINUTES
         )
 
-    if settings.ANNOUNCE_INTERVAL_DAYS > 0 and settings.MONITORED_GROUP_IDS:
+    if settings.ANNOUNCE_INTERVAL_DAYS > 0:
         app.job_queue.run_repeating(
             announce_job, interval=_ANNOUNCE_TICK_SECONDS, first=60
         )

@@ -63,6 +63,16 @@ async def init_schema() -> None:
                 posted_at  TEXT NOT NULL
             )
         """)
+        # The groups being watched. In the database rather than the environment
+        # because these change often — new community groups get added all the
+        # time, and that shouldn't need a config edit and a restart.
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS gate_monitored_chats (
+                chat_id  INTEGER PRIMARY KEY,
+                title    TEXT,
+                added_at TEXT NOT NULL
+            )
+        """)
         await db.commit()
 
 
@@ -202,6 +212,48 @@ async def awaiting_form_users() -> list[dict]:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT * FROM gate_users WHERE status = 'awaiting_form'"
+        )
+        return [dict(row) for row in await cur.fetchall()]
+
+
+# ── Monitored groups ────────────────────────────────────────────────────────────
+
+async def add_monitored_chat(chat_id: int, title: str | None) -> bool:
+    """Start watching a group. False if it was already being watched."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "SELECT 1 FROM gate_monitored_chats WHERE chat_id = ?", (chat_id,)
+        )
+        existed = await cur.fetchone() is not None
+        await db.execute(
+            """
+            INSERT INTO gate_monitored_chats (chat_id, title, added_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(chat_id) DO UPDATE SET
+                title = COALESCE(excluded.title, gate_monitored_chats.title)
+            """,
+            (chat_id, title, _now()),
+        )
+        await db.commit()
+        return not existed
+
+
+async def remove_monitored_chat(chat_id: int) -> bool:
+    """Stop watching a group. False if it wasn't being watched."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "DELETE FROM gate_monitored_chats WHERE chat_id = ?", (chat_id,)
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def monitored_chats() -> list[dict]:
+    """Every group currently being watched."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT * FROM gate_monitored_chats ORDER BY added_at"
         )
         return [dict(row) for row in await cur.fetchall()]
 
