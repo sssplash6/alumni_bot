@@ -6,10 +6,12 @@ that field into each student's personal form link (see ``personalized_form_url``
 so the match is exact and the student never has to type or paste anything.
 
 Two entry points:
-  * ``lookup(tg_id)``     — check one student now (the "I've completed the form"
-                            button). Targeted query, fast.
-  * ``fetch_completed()`` — one paginated pass over the table returning every
-                            completed submission, for the background poll.
+  * ``lookup(tg_id, username)``   — check one student now (the "I've completed the
+                                    form" button).
+  * ``fetch_completed_for(rows)`` — check a batch of students at once, for the
+                                    background poll. Queries those specific people
+                                    rather than scanning the table, so cost scales
+                                    with the number mid-onboarding, not table size.
 
 Both return ``None`` when Airtable isn't configured or a request fails — callers
 treat that as "couldn't verify" rather than "not complete", so setup and outage
@@ -26,6 +28,11 @@ logger = logging.getLogger(__name__)
 
 _API = "https://api.airtable.com/v0"
 _TIMEOUT = 15.0
+
+# People per poll request. Each person contributes one or two formula clauses, so
+# this keeps the formula and URL comfortably short while still collapsing a whole
+# onboarding cohort into a couple of calls.
+_POLL_CHUNK = 25
 
 # Characters that would break out of the `{field}` reference in a formula. The
 # field name is operator-supplied, so a stray one of these would 422 every
@@ -242,63 +249,104 @@ async def lookup(tg_id: int, username: str | None = None) -> dict | None:
     return {"complete": False, "name": None, "matched_by": None}
 
 
-async def fetch_completed() -> dict[str, dict[str, str | None]] | None:
-    """One paginated pass over the table for the background poll.
+async def fetch_completed_for(
+    waiting: list[dict],
+) -> dict[str, dict[str, str | None]] | None:
+    """Look up submissions for just the people we're waiting on.
 
-    Returns ``{"by_id": {tg_id_str: name}, "by_username": {normalized: name}}``
-    covering every completed submission, or ``None`` if Airtable isn't configured
-    or a request failed.
+    Returns ``{"by_id": {tg_id_str: name}, "by_username": {normalized: name}}``,
+    or ``None`` if Airtable isn't configured or a request failed.
 
-    Both maps are built in the same pass so the poll can advance people whose row
-    predates tg_id without spending extra API calls.
+    Asks about specific people rather than scanning the table, because cost has to
+    scale with the number of students mid-onboarding — usually a handful — not with
+    table size. A full pass over ~1,000 rows is 10 paginated requests, which at a
+    3-minute interval is ~144k calls/month and blows through even a Team
+    workspace's 100k allowance; this is one request per 25 people waiting.
     """
-    if not settings.airtable_ready():
+    if not settings.airtable_ready() or not waiting:
+        return None
+    if not _field_name_safe(settings.AIRTABLE_TG_FIELD):
+        logger.error(
+            "GATE_AIRTABLE_TG_FIELD=%r can't be used in a formula",
+            settings.AIRTABLE_TG_FIELD,
+        )
         return None
 
+    legacy_field = _legacy_lookup_field()
     by_id: dict[str, str | None] = {}
     by_username: dict[str, str | None] = {}
+
+    for start in range(0, len(waiting), _POLL_CHUNK):
+        chunk = waiting[start:start + _POLL_CHUNK]
+        clauses: list[str] = []
+        for row in chunk:
+            clauses.append(
+                "{%s}&''='%d'" % (settings.AIRTABLE_TG_FIELD, int(row["user_id"]))
+            )
+            handle = _normalize_username(row.get("username"))
+            if handle and legacy_field:
+                clauses.append(
+                    "LOWER(TRIM(SUBSTITUTE({%s},'@','')))='%s'" % (legacy_field, handle)
+                )
+        if not clauses:
+            continue
+
+        records = await _query_all("OR(%s)" % ",".join(clauses))
+        if records is None:
+            return None
+
+        for record in records:
+            fields = record.get("fields", {})
+            if not _is_complete(fields):
+                continue
+            name = _name_from(fields)
+
+            tg = fields.get(settings.AIRTABLE_TG_FIELD)
+            if tg not in (None, ""):
+                by_id[str(tg).strip()] = name
+            if legacy_field:
+                handle = _normalize_username(fields.get(legacy_field))
+                if handle and (handle not in by_username or name):
+                    by_username[handle] = name
+
+    return {"by_id": by_id, "by_username": by_username}
+
+
+async def _query_all(formula: str) -> list[dict] | None:
+    """Run a filterByFormula query, following pagination.
+
+    Returns the matching records, or None if we couldn't ask at all — callers must
+    treat that as "couldn't verify", never as "no submission".
+    """
+    records: list[dict] = []
     offset: str | None = None
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             while True:
-                params: list[tuple[str, str]] = [("pageSize", "100")]
+                params: list[tuple[str, str]] = [
+                    ("pageSize", "100"),
+                    ("filterByFormula", formula),
+                ]
                 for field in _wanted_fields():
                     params.append(("fields[]", field))
                 if offset:
                     params.append(("offset", offset))
                 resp = await client.get(_table_url(), headers=_headers(), params=params)
-                # Note the asymmetry worth knowing when debugging: this pass
-                # names fields explicitly, so a typo in the name/done field 422s
-                # every poll while lookup() (which sends no fields[]) keeps
-                # working — button users get in, waiters never do.
+                # Worth knowing when debugging: this names fields explicitly, so a
+                # typo in the name/done/username field 422s every poll while
+                # lookup() (which sends no fields[]) keeps working — button users
+                # get in, waiters never do.
                 _log_http_hint(resp)
                 resp.raise_for_status()
                 data = resp.json()
-                for record in data.get("records", []):
-                    fields = record.get("fields", {})
-                    if not _is_complete(fields):
-                        continue
-                    name = _name_from(fields)
-
-                    tg = fields.get(settings.AIRTABLE_TG_FIELD)
-                    if tg not in (None, ""):
-                        by_id[str(tg).strip()] = name
-
-                    if settings.AIRTABLE_USERNAME_FIELD:
-                        handle = _normalize_username(
-                            fields.get(settings.AIRTABLE_USERNAME_FIELD)
-                        )
-                        # Don't let an earlier row shadow a later one that has a
-                        # name, but otherwise first write wins.
-                        if handle and (handle not in by_username or name):
-                            by_username[handle] = name
+                records.extend(data.get("records", []))
                 offset = data.get("offset")
                 if not offset:
                     break
     except Exception:
-        logger.exception("Airtable fetch_completed failed")
+        logger.exception("Airtable poll query failed")
         return None
-    return {"by_id": by_id, "by_username": by_username}
+    return records
 
 
 def personalized_form_url(tg_id: int) -> str | None:

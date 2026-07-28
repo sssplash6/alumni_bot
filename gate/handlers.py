@@ -703,7 +703,9 @@ async def poll_forms(context: ContextTypes.DEFAULT_TYPE) -> None:
     waiting = await db.awaiting_form_users()
     if not waiting:
         return
-    completed = await formcheck.fetch_completed()
+    # Ask about these specific people rather than scanning the table: cost scales
+    # with the number mid-onboarding, not with how many rows exist.
+    completed = await formcheck.fetch_completed_for(waiting)
     if not completed:
         return
     by_id = completed.get("by_id", {})

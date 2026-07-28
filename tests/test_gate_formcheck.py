@@ -248,3 +248,90 @@ async def test_lookup_returns_none_when_fallback_request_fails():
 
     with patch.multiple(settings, **_AIRTABLE_ON), patch.object(fc, "_query", fake_query):
         assert await fc.lookup(555, "alice") is None
+
+
+# ── The poll asks about specific people, not the whole table ─────────────────────
+
+@pytest.mark.asyncio
+async def test_poll_queries_only_the_waiting_people():
+    """A full-table scan of ~1000 rows is 10 requests; at a 3-minute interval that
+    exceeds even a Team workspace's monthly allowance."""
+    seen = []
+
+    async def fake_query_all(formula):
+        seen.append(formula)
+        return [{"fields": {"tg_id": "111", "Full name": "One"}}]
+
+    waiting = [{"user_id": 111, "username": "one"}]
+    with patch.multiple(settings, **_AIRTABLE_ON), patch.object(
+        fc, "_query_all", fake_query_all
+    ):
+        result = await fc.fetch_completed_for(waiting)
+
+    assert len(seen) == 1, "one request, regardless of table size"
+    assert "OR(" in seen[0]
+    assert "{tg_id}&''='111'" in seen[0]
+    assert result == {"by_id": {"111": "One"}, "by_username": {}}
+
+
+@pytest.mark.asyncio
+async def test_poll_includes_the_legacy_username_clause():
+    seen = []
+
+    async def fake_query_all(formula):
+        seen.append(formula)
+        return []
+
+    waiting = [{"user_id": 111, "username": "@Alecc_lefk"}]
+    with patch.multiple(settings, **_AIRTABLE_ON), patch.object(
+        fc, "_query_all", fake_query_all
+    ):
+        await fc.fetch_completed_for(waiting)
+
+    assert "'alecc_lefk'" in seen[0]
+
+
+@pytest.mark.asyncio
+async def test_poll_chunks_large_cohorts():
+    seen = []
+
+    async def fake_query_all(formula):
+        seen.append(formula)
+        return []
+
+    waiting = [{"user_id": i, "username": None} for i in range(1, 61)]
+    with patch.multiple(settings, **_AIRTABLE_ON), patch.object(
+        fc, "_query_all", fake_query_all
+    ):
+        await fc.fetch_completed_for(waiting)
+
+    # 60 people at 25 per request.
+    assert len(seen) == 3
+
+
+@pytest.mark.asyncio
+async def test_poll_returns_none_on_failure_never_empty():
+    """None means 'couldn't ask'. Returning {} would look like 'nobody has
+    submitted' and quietly strand everyone."""
+    async def fake_query_all(formula):
+        return None
+
+    with patch.multiple(settings, **_AIRTABLE_ON), patch.object(
+        fc, "_query_all", fake_query_all
+    ):
+        assert await fc.fetch_completed_for([{"user_id": 1, "username": None}]) is None
+
+
+@pytest.mark.asyncio
+async def test_poll_with_nobody_waiting_makes_no_request():
+    called = []
+
+    async def fake_query_all(formula):
+        called.append(formula)
+        return []
+
+    with patch.multiple(settings, **_AIRTABLE_ON), patch.object(
+        fc, "_query_all", fake_query_all
+    ):
+        assert await fc.fetch_completed_for([]) is None
+    assert called == []

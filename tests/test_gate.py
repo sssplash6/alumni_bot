@@ -418,7 +418,7 @@ def test_poll_advances_completed_to_intro(live):
 
     with patch.object(settings, "airtable_ready", lambda: True), patch.object(
         gh.formcheck,
-        "fetch_completed",
+        "fetch_completed_for",
         AsyncMock(
             return_value={"by_id": {"111": "One Fullname"}, "by_username": {}}
         ),
@@ -444,7 +444,7 @@ def test_poll_matches_legacy_row_by_username(live):
 
     with patch.object(settings, "airtable_ready", lambda: True), patch.object(
         gh.formcheck,
-        "fetch_completed",
+        "fetch_completed_for",
         AsyncMock(
             return_value={
                 "by_id": {},
@@ -465,7 +465,7 @@ def test_poll_prefers_tg_id_over_username(live):
 
     with patch.object(settings, "airtable_ready", lambda: True), patch.object(
         gh.formcheck,
-        "fetch_completed",
+        "fetch_completed_for",
         AsyncMock(
             return_value={
                 "by_id": {"111": "From tg_id"},
@@ -484,7 +484,7 @@ def test_poll_ignores_users_with_no_username_and_no_id_match(live):
 
     with patch.object(settings, "airtable_ready", lambda: True), patch.object(
         gh.formcheck,
-        "fetch_completed",
+        "fetch_completed_for",
         AsyncMock(return_value={"by_id": {}, "by_username": {"someone": None}}),
     ):
         asyncio.run(gh.poll_forms(ctx))
