@@ -42,6 +42,13 @@ MONITORED_GROUP_IDS: list[int] = _parse_id_list(
 # Deep-link payload: group nudges open the bot with /start <this>.
 START_PAYLOAD: str = "alumni"
 
+# Start watching a group automatically when the bot is made an administrator
+# there. The gate needs admin rights to function at all — join events and, with
+# privacy mode off, messages — so being promoted is already a deliberate act by
+# someone who runs that group, and makes a good opt-in signal on its own.
+# Set false to require an explicit /gate_watch in every group.
+AUTO_WATCH: bool = _flag(os.environ.get("GATE_AUTO_WATCH", "true"))
+
 # The onboarding brief asks for 50-100 words, so anything much shorter isn't the
 # intro being asked for — without a floor a single "ok" would open the gate.
 INTRO_MIN_WORDS: int = int(os.environ.get("GATE_INTRO_MIN_WORDS", "50") or "50")

@@ -185,6 +185,14 @@ WATCH_ADDED = (
     "I'll check people here against the Alumni group. Run "
     "<code>/gate_announce</code> to post the join message."
 )
+AUTO_WATCHED = (
+    "👀 I was made an admin in <b>{title}</b>, so I've started watching it.\n"
+    "<code>{chat_id}</code>\n\n"
+    "People here will be checked against the Alumni group. Run "
+    "<code>/gate_announce</code> in it to post the join message, or "
+    "<code>/gate_unwatch</code> there if this wasn't intended."
+)
+
 WATCH_ALREADY = "👀 Already watching <b>{title}</b> — nothing to change."
 WATCH_NOT_A_GROUP = "This only works inside a group. Run it in the group you want watched."
 WATCH_IS_ALUMNI_GROUP = (

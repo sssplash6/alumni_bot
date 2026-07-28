@@ -247,6 +247,60 @@ async def on_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await _process_user(context, chat_id, user)
 
 
+async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """The bot's own status changed in a chat — start or stop watching it.
+
+    Being promoted to administrator is treated as the opt-in: the gate cannot
+    function without admin rights, so someone granting them has already decided
+    this group should be handled. That saves running /gate_watch by hand in every
+    group, which doesn't scale when groups are added regularly.
+
+    Removal is the opposite signal, so the group is dropped — posting into a chat
+    the bot has been thrown out of only produces errors.
+    """
+    result = update.my_chat_member
+    if result is None or result.new_chat_member.user.id != context.bot.id:
+        return
+
+    chat = result.chat
+    if chat.type not in ("group", "supergroup"):
+        return
+
+    new_status = result.new_chat_member.status
+
+    if new_status in ("left", "kicked"):
+        if await db.remove_monitored_chat(chat.id):
+            await refresh_monitored()
+            logger.info("Removed from chat %d — stopped watching it", chat.id)
+        return
+
+    # Never watch the destination group: it would nudge people about the very
+    # group they're already in.
+    if chat.id == settings.GROUP_ID:
+        return
+    if not settings.AUTO_WATCH or new_status != "administrator":
+        return
+    if is_monitored(chat.id):
+        return
+
+    await db.add_monitored_chat(chat.id, chat.title)
+    await refresh_monitored()
+    logger.info("Promoted to admin in chat %d (%s) — now watching it",
+                chat.id, chat.title)
+
+    for admin_id in ADMIN_IDS:
+        try:
+            await context.bot.send_message(
+                chat_id=admin_id,
+                text=msg.AUTO_WATCHED.format(
+                    title=html.escape(chat.title or str(chat.id)), chat_id=chat.id
+                ),
+                parse_mode="HTML",
+            )
+        except Exception:
+            logger.debug("Could not tell admin %d about auto-watching", admin_id)
+
+
 async def on_group_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """First-time posters in a monitored group get checked."""
     chat = update.effective_chat
@@ -910,6 +964,13 @@ def register(app: Application) -> None:
     app.add_handler(CommandHandler("gate_groups", groups_command, filters=_private))
 
     app.add_handler(ChatMemberHandler(on_chat_member, ChatMemberHandler.CHAT_MEMBER))
+    # group=1: the host bot already handles MY_CHAT_MEMBER to report chat IDs, and
+    # within one handler group only the first match runs. A separate group lets
+    # both fire for the same update.
+    app.add_handler(
+        ChatMemberHandler(on_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER),
+        group=1,
+    )
     app.add_handler(
         MessageHandler(
             filters.ChatType.GROUPS & ~filters.StatusUpdate.ALL & ~filters.COMMAND,

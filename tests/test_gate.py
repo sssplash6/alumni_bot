@@ -805,3 +805,100 @@ def test_groups_command_lists_what_is_watched(live):
     text = dm_reply.await_args.args[0]
     assert "-100555" in text
     assert str(ALUMNI_GROUP) in text     # the destination is shown too
+
+
+# ── Auto-watch: promotion to admin is the opt-in ────────────────────────────────
+
+def _promotion(chat_id=-100555, title="New Cohort", new_status="administrator",
+               old_status="member", chat_type="supergroup", bot_id=42):
+    return SimpleNamespace(
+        my_chat_member=SimpleNamespace(
+            chat=SimpleNamespace(id=chat_id, type=chat_type, title=title),
+            old_chat_member=SimpleNamespace(status=old_status),
+            new_chat_member=SimpleNamespace(
+                status=new_status, user=SimpleNamespace(id=bot_id)
+            ),
+        )
+    )
+
+
+def _bot_ctx(**kw):
+    ctx = _ctx(**kw)
+    ctx.bot.id = 42
+    return ctx
+
+
+def test_promotion_to_admin_starts_watching(live):
+    ctx = _bot_ctx()
+
+    asyncio.run(gh.on_my_chat_member(_promotion(), ctx))
+
+    assert gh.is_monitored(-100555)
+    # Admins are told, so an unintended one can be undone.
+    assert ctx.bot.send_message.await_args.kwargs["chat_id"] == 1
+
+
+def test_watched_group_from_promotion_is_immediately_live(live):
+    ctx = _bot_ctx()
+    asyncio.run(gh.on_my_chat_member(_promotion(), ctx))
+    ctx.bot.send_message.reset_mock()
+
+    asyncio.run(gh.on_group_message(SimpleNamespace(
+        effective_chat=SimpleNamespace(id=-100555, type="supergroup"),
+        effective_user=_user(uid=901),
+    ), ctx))
+
+    assert asyncio.run(gdb.get_user(901))["status"] == "nudged"
+
+
+def test_merely_being_added_does_not_start_watching(live):
+    """Admin rights are the signal — a plain member add isn't enough."""
+    ctx = _bot_ctx()
+
+    asyncio.run(gh.on_my_chat_member(
+        _promotion(old_status="left", new_status="member"), ctx))
+
+    assert not gh.is_monitored(-100555)
+
+
+def test_promotion_in_the_alumni_group_is_ignored(live):
+    ctx = _bot_ctx()
+
+    asyncio.run(gh.on_my_chat_member(_promotion(chat_id=ALUMNI_GROUP), ctx))
+
+    assert not gh.is_monitored(ALUMNI_GROUP)
+
+
+def test_removal_stops_watching(live):
+    ctx = _bot_ctx()
+
+    asyncio.run(gh.on_my_chat_member(
+        _promotion(chat_id=MONITORED, old_status="administrator",
+                   new_status="kicked"), ctx))
+
+    assert not gh.is_monitored(MONITORED)
+
+
+def test_auto_watch_can_be_disabled(live, monkeypatch):
+    monkeypatch.setattr(settings, "AUTO_WATCH", False)
+    ctx = _bot_ctx()
+
+    asyncio.run(gh.on_my_chat_member(_promotion(), ctx))
+
+    assert not gh.is_monitored(-100555)
+
+
+def test_other_bots_promotions_are_ignored(live):
+    ctx = _bot_ctx()
+
+    asyncio.run(gh.on_my_chat_member(_promotion(bot_id=999), ctx))
+
+    assert not gh.is_monitored(-100555)
+
+
+def test_promotion_is_idempotent(live):
+    ctx = _bot_ctx()
+    asyncio.run(gh.on_my_chat_member(_promotion(chat_id=MONITORED), ctx))
+
+    # Already watched (seeded), so no duplicate notification.
+    ctx.bot.send_message.assert_not_awaited()
