@@ -12,6 +12,26 @@ NOT_CONFIGURED = (
     "later, or contact an admin."
 )
 
+# Not in any of the community groups, so not eligible. Worded as "we can't find
+# you" rather than "you're rejected": the honest failure mode here is a second
+# Telegram account, and telling someone they don't belong when they do is worse
+# than asking them to check.
+NOT_IN_ANY_GROUP = (
+    "🤔 I can't find you in any of the Freshman community groups.\n\n"
+    "The Alumni group is for people who are already part of one of them, so I "
+    "can't start you off just yet.\n\n"
+    "If you <b>are</b> in one, you may be messaging me from a different Telegram "
+    "account than the one you use there — try again from that account. Otherwise, "
+    "message an admin and they'll sort it out. 💬"
+)
+
+# Every eligibility lookup failed, so we genuinely don't know. Never refuse on
+# this — a network blip must not read as "you don't belong".
+ELIGIBILITY_UNAVAILABLE = (
+    "⚠️ I couldn't check your group membership just now. Please try again in a "
+    "minute — if it keeps happening, message an admin."
+)
+
 # ── Group nudge (posted publicly, tags the person) ──────────────────────────────
 # {mention} is an HTML <a href="tg://user?id=..."> mention that notifies them.
 GROUP_NUDGE = (

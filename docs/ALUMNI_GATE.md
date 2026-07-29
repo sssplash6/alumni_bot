@@ -66,6 +66,10 @@ Pinned announcement
                                     │ no
 Group nudge ──tap "Register"──▶ onboarding ◀───┘
                                      │
+                   in at least one watched group?
+                                     │
+              no ──▶ "I can't find you in any of the groups"
+                                     │ yes
                         send the onboarding brief with buttons:
                         [Complete the form] [Read the doc] [I've completed the form ✅]
                                      │
@@ -100,6 +104,52 @@ membership *before* consulting Airtable, so anyone already in the group is
 classified silently and is never asked for a form or an intro — which is what
 makes an existing cohort of several hundred people zero-friction. A test pins
 this property down, because it's easy to break by reordering a handler.
+
+## Who is allowed to onboard
+
+The bot's username is public: anyone can open a DM with it and ask for the form.
+Nothing about submitting a form proves anything — the form is public too, nobody
+reviews it, and with no `GATE_AIRTABLE_DONE_FIELD` set, a row existing *is* the
+pass. So without an eligibility check a stranger reaches a working invite link
+with no human involved at any point.
+
+The check is **membership in at least one watched group**, asked once at the
+single door into onboarding (`start_onboarding`). That is the same question the
+gate exists to answer: it moves people from the community groups into the alumni
+group, so being in one of those groups is what makes someone a candidate. Later
+steps aren't re-checked because the statuses they read can only be reached
+through this one.
+
+Being *detected* is deliberately not required — someone can legitimately open the
+bot before a join, post or tap has surfaced them.
+
+It short-circuits on the first group that has them, so the usual cost is one
+`getChatMember` call, and none at all for someone already in the alumni group.
+
+Three outcomes, kept distinct on purpose:
+
+| Outcome | Response |
+| --- | --- |
+| In at least one watched group | Proceeds to the form |
+| Every group answered, none had them | "I can't find you in any of the groups" |
+| Nothing could be asked | "Couldn't check, try again in a minute" |
+
+The third case matters because Telegram reports "not a participant" by *raising*
+`BadRequest`, so a bare `except` would make an outage look identical to a
+stranger. Only `BadRequest` counts as an answer; `Forbidden` (the bot is no
+longer admin in that group) and network errors do not, since both are our problem
+and refusing a real member over a hiccup is the one outcome worse than asking
+them to retry.
+
+**This makes the watched-group list load-bearing.** With no groups watched, the
+eligibility check has nothing to ask and nobody can onboard — it fails closed and
+logs why, rather than quietly admitting everyone. `GATE_REQUIRE_WATCHED_GROUP=false`
+turns the whole check off if the alumni group is meant to be open to anyone.
+
+Note what this does *not* do: it doesn't verify anyone is genuinely an alumnus,
+only that they're already inside the community. If you need a human veto on top,
+set `GATE_AIRTABLE_DONE_FIELD` to an approval column — `_is_complete()` then
+requires it to be non-empty, so nobody is admitted until someone ticks it.
 
 **Legacy submissions.** For rows that predate `tg_id`, setting
 `GATE_AIRTABLE_USERNAME_FIELD` to a student-typed username column enables a

@@ -31,6 +31,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.error import BadRequest, Forbidden
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -128,6 +129,57 @@ async def _is_member(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
         logger.debug("gate get_chat_member failed for user %d", user_id)
         return False
     return member.status in _PRESENT_STATUSES
+
+
+async def _in_a_watched_group(
+    context: ContextTypes.DEFAULT_TYPE, user_id: int
+) -> bool | None:
+    """Whether this person is in at least one watched group.
+
+    ``True``  — found in one; stops at the first hit, so the usual cost is one call.
+    ``False`` — at least one group gave a real answer and none of them had them.
+    ``None``  — nothing could be asked, so we don't know.
+
+    The third case is separate on purpose. Telegram answers "not a participant" by
+    *raising* BadRequest, not by returning a status, so a bare ``except`` would
+    make an outage indistinguishable from a stranger — and refusing a real member
+    because the network hiccuped is the one outcome worse than asking them to
+    retry. Only BadRequest counts as an answer; Forbidden (bot no longer admin
+    there) and network errors do not, since both are our problem, not theirs.
+    """
+    chat_ids = sorted(monitored_ids())
+    if not chat_ids:
+        # Refusing everyone is the safe direction, but it means the gate is
+        # unusable, so say why rather than letting it look like rejection.
+        logger.error(
+            "Eligibility check can't run: no watched groups. Seed "
+            "GATE_MONITORED_GROUP_IDS or run /gate_watch, or set "
+            "GATE_REQUIRE_WATCHED_GROUP=false to admit anyone who asks."
+        )
+        return None
+
+    answered = False
+    for chat_id in chat_ids:
+        try:
+            member = await context.bot.get_chat_member(chat_id, user_id)
+        except BadRequest:
+            answered = True  # a real "they're not in here"
+            continue
+        except Forbidden:
+            logger.warning(
+                "Can't read members of watched chat %d — bot is not an admin "
+                "there. Skipping it for eligibility.", chat_id
+            )
+            continue
+        except Exception:
+            logger.warning(
+                "Eligibility lookup failed for chat %d, user %d", chat_id, user_id
+            )
+            continue
+        answered = True
+        if member.status in _PRESENT_STATUSES:
+            return True
+    return False if answered else None
 
 
 async def _create_invite_link(
@@ -579,6 +631,23 @@ async def start_onboarding(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             reply_markup=_join_markup(existing["invite_link"]),
         )
         return
+
+    # Eligibility. The bot's username is public, so without this the only thing
+    # standing between a stranger and an invite link is filling in a public form.
+    # Checked here, at the single door into onboarding, rather than at each later
+    # step — the statuses those steps read can only be reached through this one.
+    if settings.REQUIRE_WATCHED_GROUP:
+        eligible = await _in_a_watched_group(context, user.id)
+        if eligible is None:
+            await message.reply_text(msg.ELIGIBILITY_UNAVAILABLE, parse_mode="HTML")
+            return
+        if not eligible:
+            logger.info(
+                "Refused onboarding for user %d (@%s): in none of the %d watched "
+                "groups", user.id, user.username, len(monitored_ids()),
+            )
+            await message.reply_text(msg.NOT_IN_ANY_GROUP, parse_mode="HTML")
+            return
 
     await db.mark_awaiting_form(user.id, user.username, user.first_name)
 

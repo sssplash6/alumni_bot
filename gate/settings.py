@@ -49,6 +49,21 @@ START_PAYLOAD: str = "alumni"
 # Set false to require an explicit /gate_watch in every group.
 AUTO_WATCH: bool = _flag(os.environ.get("GATE_AUTO_WATCH", "true"))
 
+# Only let people onboard if they're in at least one watched group.
+#
+# Without this the bot's username is the whole door: anyone who finds it can ask
+# for the form, and since submitting a form is what "verified" means, a stranger
+# reaches a working invite link with no human involved. The gate exists to move
+# people from the community groups into the alumni group, so membership in one of
+# those groups is the eligibility question — and the tap/join/post that would
+# have surfaced them is not required, because someone can legitimately open the
+# bot before we ever notice them.
+#
+# Set false only if the alumni group is meant to be open to anyone who asks.
+REQUIRE_WATCHED_GROUP: bool = _flag(
+    os.environ.get("GATE_REQUIRE_WATCHED_GROUP", "true")
+)
+
 # The onboarding brief asks for 50-100 words, so anything much shorter isn't the
 # intro being asked for — without a floor a single "ok" would open the gate.
 INTRO_MIN_WORDS: int = int(os.environ.get("GATE_INTRO_MIN_WORDS", "50") or "50")

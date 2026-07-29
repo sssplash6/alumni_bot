@@ -215,6 +215,10 @@ services:
       #                              matches on a self-reported username, so
       #                              leave blank unless you have that backlog
       #   GATE_AUTO_WATCH            default true (false = /gate_watch only)
+      #   GATE_REQUIRE_WATCHED_GROUP default true — only people already in a
+      #                              watched group may onboard. Leave it on: the
+      #                              bot's username is public, so with it off
+      #                              anyone who submits the form gets an invite
       #
       # Anything set in the Dashboard survives a Blueprint sync as long as it is
       # not also declared with a hardcoded `value:` in this file.

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from telegram.error import BadRequest, Forbidden, NetworkError
 
 import gate
 from gate import db as gdb
@@ -33,6 +34,7 @@ def live(tmp_path):
         MONITORED_GROUP_IDS=[MONITORED],
         ANNOUNCE_INTERVAL_DAYS=5,
         INTRO_MIN_WORDS=50,
+        REQUIRE_WATCHED_GROUP=True,
     ):
         asyncio.run(gdb.init_schema())
         # The watched-group list lives in the DB and is cached in memory, so it
@@ -48,16 +50,29 @@ def _user(uid=555, username="alice", first="Alice", is_bot=False):
     return SimpleNamespace(id=uid, username=username, first_name=first, is_bot=is_bot)
 
 
-def _ctx(member_status=None, invite="https://t.me/+newlink"):
-    """A context whose bot answers get_chat_member / create_chat_invite_link."""
+def _ctx(member_status=None, invite="https://t.me/+newlink", watched_status="member"):
+    """A context whose bot answers get_chat_member / create_chat_invite_link.
+
+    The two groups are answered separately, because they ask opposite questions:
+    ``member_status`` is the status in the *alumni* group (None = not in it, which
+    is what makes someone a candidate), while ``watched_status`` is the status in
+    every *watched* group and decides eligibility. It defaults to "member" so
+    onboarding tests stay about onboarding; pass None for someone in no group.
+
+    Absence is signalled with BadRequest rather than a bare Exception because
+    that is how Telegram reports it, and the gate treats the two differently — a
+    bare Exception means "couldn't ask", not "not a member".
+    """
     bot_obj = MagicMock()
     bot_obj.username = "AlumniBot"
-    if member_status is None:
-        bot_obj.get_chat_member = AsyncMock(side_effect=Exception("user not found"))
-    else:
-        bot_obj.get_chat_member = AsyncMock(
-            return_value=SimpleNamespace(status=member_status)
-        )
+
+    def _member(chat_id, user_id):
+        status = member_status if chat_id == settings.GROUP_ID else watched_status
+        if status is None:
+            raise BadRequest("user not found")
+        return SimpleNamespace(status=status)
+
+    bot_obj.get_chat_member = AsyncMock(side_effect=_member)
     bot_obj.create_chat_invite_link = AsyncMock(
         return_value=SimpleNamespace(invite_link=invite)
     )
@@ -283,6 +298,123 @@ def test_start_onboarding_sends_brief(live):
     markup = reply.await_args.kwargs["reply_markup"]
     buttons = [b for row in markup.inline_keyboard for b in row]
     assert any(getattr(b, "callback_data", None) == gh.CHECK_FORM_CB for b in buttons)
+
+
+def test_stranger_in_no_watched_group_is_refused(live):
+    """The bot's username is public, so this is the door a stranger walks up to."""
+    ctx = _ctx(member_status=None, watched_status=None)
+    update, reply = _dm(None)
+
+    asyncio.run(gh.start_onboarding(update, ctx))
+
+    assert "can't find you" in reply.await_args.args[0].lower()
+    # No row: they must not occupy a slot the form poll then asks Airtable about,
+    # and nudge-once must not lock them out of a later legitimate attempt.
+    assert asyncio.run(gdb.get_user(555)) is None
+    ctx.bot.create_chat_invite_link.assert_not_awaited()
+
+
+def test_member_of_a_watched_group_proceeds(live):
+    ctx = _ctx(member_status=None, watched_status="member")
+    update, reply = _dm(None)
+
+    asyncio.run(gh.start_onboarding(update, ctx))
+
+    assert asyncio.run(gdb.get_user(555))["status"] == "awaiting_form"
+
+
+def test_restricted_in_a_watched_group_still_counts(live):
+    """Muted in a community group is still being in it."""
+    ctx = _ctx(member_status=None, watched_status="restricted")
+    update, _ = _dm(None)
+
+    asyncio.run(gh.start_onboarding(update, ctx))
+
+    assert asyncio.run(gdb.get_user(555))["status"] == "awaiting_form"
+
+
+def test_left_a_watched_group_does_not_count(live):
+    ctx = _ctx(member_status=None, watched_status="left")
+    update, reply = _dm(None)
+
+    asyncio.run(gh.start_onboarding(update, ctx))
+
+    assert "can't find you" in reply.await_args.args[0].lower()
+    assert asyncio.run(gdb.get_user(555)) is None
+
+
+def test_eligibility_outage_is_not_a_refusal(live):
+    """A network blip must not tell a real member they don't belong."""
+    ctx = _ctx(member_status=None)
+    ctx.bot.get_chat_member = AsyncMock(side_effect=NetworkError("boom"))
+    update, reply = _dm(None)
+
+    asyncio.run(gh.start_onboarding(update, ctx))
+
+    text = reply.await_args.args[0].lower()
+    assert "couldn't check" in text
+    assert "can't find you" not in text
+    assert asyncio.run(gdb.get_user(555)) is None
+
+
+def test_losing_admin_in_a_watched_group_is_not_an_answer(live):
+    """Forbidden is our misconfiguration, so it can't be read as 'not in it'."""
+    ctx = _ctx(member_status=None)
+    ctx.bot.get_chat_member = AsyncMock(side_effect=Forbidden("not enough rights"))
+    update, reply = _dm(None)
+
+    asyncio.run(gh.start_onboarding(update, ctx))
+
+    assert "couldn't check" in reply.await_args.args[0].lower()
+
+
+def test_no_watched_groups_refuses_rather_than_admitting_everyone(live):
+    asyncio.run(gdb.remove_monitored_chat(MONITORED))
+    asyncio.run(gh.refresh_monitored())
+    ctx = _ctx(member_status=None, watched_status=None)
+    update, reply = _dm(None)
+
+    asyncio.run(gh.start_onboarding(update, ctx))
+
+    assert "couldn't check" in reply.await_args.args[0].lower()
+    assert asyncio.run(gdb.get_user(555)) is None
+    # Only the alumni-membership check ran; eligibility had nowhere to ask.
+    assert ctx.bot.get_chat_member.await_count == 1
+
+
+def test_eligibility_stops_at_the_first_hit(live):
+    """Cost is one call for most people, not one per watched group."""
+    for extra in (-100222, -100333, -100444):
+        asyncio.run(gdb.add_monitored_chat(extra, "Extra"))
+    asyncio.run(gh.refresh_monitored())
+    ctx = _ctx(member_status=None, watched_status="member")
+    update, _ = _dm(None)
+
+    asyncio.run(gh.start_onboarding(update, ctx))
+
+    # One for the alumni-membership check, one for the first watched group.
+    assert ctx.bot.get_chat_member.await_count == 2
+
+
+def test_require_watched_group_can_be_disabled(live, monkeypatch):
+    monkeypatch.setattr(settings, "REQUIRE_WATCHED_GROUP", False)
+    ctx = _ctx(member_status=None, watched_status=None)
+    update, _ = _dm(None)
+
+    asyncio.run(gh.start_onboarding(update, ctx))
+
+    assert asyncio.run(gdb.get_user(555))["status"] == "awaiting_form"
+
+
+def test_existing_alumni_member_skips_the_eligibility_check(live):
+    """Already in the destination — eligibility is moot and costs nothing."""
+    ctx = _ctx(member_status="member", watched_status=None)
+    update, reply = _dm(None)
+
+    asyncio.run(gh.start_onboarding(update, ctx))
+
+    assert asyncio.run(gdb.get_user(555))["status"] == "member"
+    assert ctx.bot.get_chat_member.await_count == 1
 
 
 def test_start_onboarding_when_dormant_says_coming_soon(tmp_path):
