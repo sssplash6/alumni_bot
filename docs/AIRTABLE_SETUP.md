@@ -61,11 +61,14 @@ The background poll costs at least one call per pass. At the default
 work for about two days and then silently stop verifying anyone.** Decide now:
 
 - Free workspace → set `GATE_POLL_INTERVAL_MINUTES=0` (button-only verification,
-  which costs one call per tap) or at minimum `60` (≈720 calls/month while the
-  table is under 100 rows — one call per pass; double that past 100 rows,
-  because the pass paginates). Watch *Workspace settings → Usage → Public API
-  calls*. `scripts/check_airtable.py` prints the actual estimate for your
-  settings and table size.
+  which costs one call per tap) or at minimum `60` (≈720 calls/month). Watch
+  *Workspace settings → Usage → Public API calls*. `scripts/check_airtable.py`
+  prints the actual estimate for your settings.
+
+A pass costs `ceil(waiting / 25)` calls — the poll asks about the students
+actually mid-onboarding, not the whole table — so it is **0 when nobody is
+waiting** and 1 for the usual handful. Table size does not affect it: the
+alumni database can grow without the bill moving.
 - Team or above → the default 3-minute poll is fine.
 
 ---
@@ -269,8 +272,8 @@ It reads the `GATE_AIRTABLE_*` / `GATE_FORM_URL` variables from the environment
 (and from `.env`), then checks, one PASS/FAIL line each: config sanity, token
 authentication, base+table reachability with `data.records:read`, that the
 `tg_id` field exists (and its type), that the optional done/name fields exist,
-the real `filterByFormula` lookup for the ID you passed, the paginated
-full-table pass the poll performs plus its monthly API-call cost, and the exact
+the real `filterByFormula` lookup for the ID you passed, the targeted `OR()`
+query the poll performs plus its monthly API-call cost, and the exact
 personalized form URL. Exit status is non-zero if any check fails.
 
 Every FAIL prints what to change. Do not go live with a FAIL — a FAIL here is
@@ -318,12 +321,12 @@ by `scripts/check_airtable.py`.
 | `GATE_AIRTABLE_TG_FIELD` misspelled, or a `fld…` ID | Nobody verified, even for students whose row exists | `422` `INVALID_FILTER_BY_FORMULA` — "Unknown field names: …" | Use the exact field **name** |
 | Field renamed in Airtable after setup | Verification worked, then stopped for everyone at once | same `422` as above | Rename back, or update `.env` and restart |
 | `}`, `'` or `"` in the field name | Nobody verified | `422 INVALID_FILTER_BY_FORMULA` | Rename the field to plain ASCII |
-| `GATE_AIRTABLE_NAME_FIELD`/`DONE_FIELD` misspelled | **Button works, background poll never verifies anyone.** Students who tap the button get in; students who wait never do | `422` `UNKNOWN_FIELD_NAME` from `fetch_completed` only (`lookup` sends no `fields[]`) | Fix the name or blank the variable |
+| `GATE_AIRTABLE_NAME_FIELD`/`DONE_FIELD`/`USERNAME_FIELD` misspelled | **Button works, background poll never verifies anyone.** Students who tap the button get in; students who wait never do | `422` `UNKNOWN_FIELD_NAME` from `fetch_completed_for` only (`lookup` sends no `fields[]`) | Fix the name or blank the variable |
 | `tg_id` not on the form (removed / toggled off in the builder) | Submissions **do** arrive in Airtable, students are still never verified | no API error at all; checker's lookup finds 0 records; `tg_id` cells are blank | Put the field back on the form; hide it with `hide_tg_id=true` only |
 | `GATE_FORM_URL` already contains `?…` or a `#fragment` | Students see the `tg_id` question, or the prefill is ignored | rows arrive with blank/edited `tg_id` | Paste the bare share link from **Share form → Copy link** |
 | `tg_id` created as Formula/Autonumber/Created-time | Cells populate with something that is not the Telegram ID; nobody verified | lookup finds 0 records | Recreate as Single line text (a new field gets a new ID — update `.env` if you used IDs anywhere) |
 | Free-plan monthly cap (1,000 calls) exhausted by the poll | Worked for ~2 days after go-live, then nobody is verified — including the button | `429` on every call; Workspace settings → Usage shows the cap hit | `GATE_POLL_INTERVAL_MINUTES=0` or `60`, or upgrade the workspace |
-| >500 rows + fast pagination, or several bot instances | Intermittent: some polls verify people, some don't | sporadic `429 RATE_LIMIT_REACHED` (5 req/s per base, 30s lockout) | Longer poll interval; run one instance |
+| >125 students waiting at once (6+ chunks), or several bot instances | Intermittent: some polls verify people, some don't | sporadic `429 RATE_LIMIT_REACHED` (5 req/s per base, 30s lockout) | Longer poll interval; run one instance |
 | Airtable outage / deploy | Intermittent "try again in a minute", self-heals | `503 RETRIABLE_ERROR` | Wait; the poll retries |
 | Bot's own network/DNS/proxy blocked | Nobody verified | `httpx.ConnectError` / timeout after 15s | Fix egress to `api.airtable.com:443` |
 

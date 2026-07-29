@@ -318,6 +318,7 @@ class Config:
         self.tg_field = env("GATE_AIRTABLE_TG_FIELD", "tg_id") or "tg_id"
         self.done_field = env("GATE_AIRTABLE_DONE_FIELD")
         self.name_field = env("GATE_AIRTABLE_NAME_FIELD")
+        self.username_field = env("GATE_AIRTABLE_USERNAME_FIELD")
         self.form_url = env("GATE_FORM_URL")
         self.poll_minutes = env("GATE_POLL_INTERVAL_MINUTES", "3") or "3"
 
@@ -752,9 +753,26 @@ def check_lookup(cfg: Config, tg_id: int) -> bool:
     return True
 
 
+# gate/formcheck.py asks about this many waiting students per request. Keep in
+# step with _POLL_CHUNK there, or the budget below stops matching reality.
+POLL_CHUNK = 25
+
+
 def check_poll_pass(cfg: Config) -> bool:
-    section("6. the background poll's full-table pass")
-    params: list[tuple[str, str]] = [("pageSize", "100")]
+    section("6. the background poll's targeted query")
+    # Mirror fetch_completed_for(): an OR() over the people actually mid-
+    # onboarding, not a scan of the table. Two synthetic clauses stand in for one
+    # waiting student — the tg_id match, plus the legacy username match when a
+    # username field is configured — so this exercises the real formula shape.
+    clauses = ["{%s}&''='%d'" % (cfg.tg_field, 1)]
+    if cfg.username_field:
+        clauses.append(
+            "LOWER(TRIM(SUBSTITUTE({%s},'@','')))='%s'" % (cfg.username_field, "probe")
+        )
+    params: list[tuple[str, str]] = [
+        ("pageSize", "100"),
+        ("filterByFormula", "OR(%s)" % ",".join(clauses)),
+    ]
     for field in cfg.wanted_fields():
         params.append(("fields[]", field))
     resp = api_get(cfg.token, cfg.table_path, params)
@@ -762,22 +780,20 @@ def check_poll_pass(cfg: Config) -> bool:
         details = [resp.describe(), advise(resp)]
         if resp.status == 422:
             details.append(
-                "This request differs from the button's only by fields[]=… — so a "
-                "422 here while check 5 passed means GATE_AIRTABLE_NAME_FIELD or "
-                "GATE_AIRTABLE_DONE_FIELD is misspelled. Symptom in production: "
-                "the button verifies people, the poll never does."
+                "This request differs from the button's only by fields[]=… and the "
+                "OR() wrapper — so a 422 here while check 5 passed means "
+                "GATE_AIRTABLE_NAME_FIELD, GATE_AIRTABLE_DONE_FIELD or "
+                "GATE_AIRTABLE_USERNAME_FIELD is misspelled. Symptom in "
+                "production: the button verifies people, the poll never does."
             )
         report(FAIL, "the poll's request shape fails", *details)
         return False
 
-    rows = len(resp.body.get("records", []))
-    has_more = bool(resp.body.get("offset"))
-    pages = 2 if has_more else 1  # ">=2" when a second page exists
     poll = getattr(cfg, "_poll", 3)
     details = [
-        f"first page returned {rows} record(s); "
-        + ("more pages exist (offset present)" if has_more else "no further pages"),
         f"fields[] requested: {', '.join(cfg.wanted_fields())}",
+        f"formula clauses per waiting student: {len(clauses)}"
+        + ("" if cfg.username_field else " (no username fallback configured)"),
     ]
     report(PASS, "the poll's request shape works", *details)
 
@@ -790,44 +806,36 @@ def check_poll_pass(cfg: Config) -> bool:
         )
         return True
 
-    per_month = int(30 * 24 * 60 / poll) * pages
-    budget = (
-        f"poll every {poll} min × {'≥' if has_more else ''}{pages} request(s) "
-        f"≈ {per_month:,} API calls/month (plus one per button tap)"
+    # Cost scales with how many students are mid-onboarding, not with table size,
+    # so there is no fixed monthly figure — only a per-waiting-student rate.
+    passes = int(30 * 24 * 60 / poll)
+    report(
+        INFO,
+        "API-call budget",
+        f"poll every {poll} min = {passes:,} passes/month; each pass costs "
+        f"ceil(waiting / {POLL_CHUNK}) requests, so it is 0 when nobody is "
+        "waiting and 1 for a typical handful.",
+        f"steady state with 1-{POLL_CHUNK} students waiting ≈ {passes:,} "
+        f"calls/month; with {POLL_CHUNK * 2 + 1}-{POLL_CHUNK * 3} waiting "
+        f"≈ {passes * 3:,}. Table size does not enter into it.",
     )
-    # This deployment runs on a Team/Business workspace, so the allowance is
-    # 100,000/month (Business and above: uncapped). Free workspaces get only
-    # 1,000, which almost any poll interval blows through — hence the hint.
-    if per_month > 100_000:
-        fits = int(30 * 24 * 60 * pages / 90_000) + 1  # headroom for taps
+    if passes > 100_000:
+        fits = int(30 * 24 * 60 / 90_000) + 1
         report(
             WARN,
-            "this poll exceeds the Team-plan monthly API allowance",
-            budget,
+            "even one request per pass exceeds the Team-plan allowance",
             "Team workspaces get 100,000 calls/month; Business and above have no "
             "monthly cap. Exceeding it triggers a one-time 30-day grace period, "
             "after which calls are BLOCKED until the month resets.",
-            f"Raise GATE_POLL_INTERVAL_MINUTES to at least {fits}. Check Workspace "
-            "settings → Usage → Public API calls to see where you stand.",
+            f"Raise GATE_POLL_INTERVAL_MINUTES to at least {fits}.",
         )
-    else:
-        report(INFO, "API-call budget", budget)
-        if per_month > 1000:
-            report(
-                INFO,
-                "note: this would exceed a Free workspace's allowance",
-                "Fine on Team (100,000/month) or Business (uncapped). On a Free "
-                "workspace (1,000/month) set GATE_POLL_INTERVAL_MINUTES=0 and rely "
-                "on the button, which costs ~1 call per tap.",
-            )
-    if has_more:
+    elif passes > 1000:
         report(
-            WARN,
-            "the table needs more than one page per poll",
-            "Pagination is sequential with no delay in gate/formcheck.py; past "
-            "~500 rows a pass can approach the 5 requests/second per-base limit, "
-            "and one 429 aborts the whole pass (it returns None, i.e. 'couldn't "
-            "verify'). Consider a longer interval or a filtered poll.",
+            INFO,
+            "note: this would exceed a Free workspace's allowance",
+            "Fine on Team (100,000/month) or Business (uncapped). On a Free "
+            "workspace (1,000/month) set GATE_POLL_INTERVAL_MINUTES=0 and rely "
+            "on the button, which costs ~1 call per tap.",
         )
     return True
 
