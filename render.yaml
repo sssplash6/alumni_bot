@@ -182,6 +182,10 @@ services:
         sync: false
       - key: GATE_GROUP_ID              # the one alumni group; bot must be admin
         sync: false
+      # One-time bootstrap only: copied into the DB at startup, after which
+      # /gate_watch and /gate_unwatch own the list. Removing an id here does not
+      # unwatch it. Never list GATE_GROUP_ID here — it is the destination, and
+      # the gate skips it rather than nudging people about their own group.
       - key: GATE_MONITORED_GROUP_IDS   # comma-separated chat IDs to watch
         sync: false
       - key: GATE_AIRTABLE_TOKEN        # Airtable PAT. A real secret.
@@ -207,6 +211,10 @@ services:
       #   GATE_AIRTABLE_TG_FIELD     default tg_id
       #   GATE_AIRTABLE_DONE_FIELD   optional
       #   GATE_AIRTABLE_NAME_FIELD   optional
+      #   GATE_AIRTABLE_USERNAME_FIELD optional — legacy rows predating tg_id;
+      #                              matches on a self-reported username, so
+      #                              leave blank unless you have that backlog
+      #   GATE_AUTO_WATCH            default true (false = /gate_watch only)
       #
       # Anything set in the Dashboard survives a Blueprint sync as long as it is
       # not also declared with a hardcoded `value:` in this file.
