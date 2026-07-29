@@ -13,13 +13,20 @@ from gate import settings
 
 ALUMNI_GROUP = -100999
 MONITORED = -100111
+ADMIN = 1
 
 
 @pytest.fixture()
 def live(tmp_path):
     """A temp DB with the gate switched on and one monitored group."""
     path = str(tmp_path / "test.db")
-    with patch("config.DB_PATH", path), patch("gate.db.DB_PATH", path), patch.multiple(
+    # ADMIN_IDS is patched because config.py load_dotenv()s the developer's real
+    # .env at import time. Without this the admin commands below are tested
+    # against whoever happens to be in that file, so they pass on a machine with
+    # no .env and fail on the machine that has one.
+    with patch("config.DB_PATH", path), patch("gate.db.DB_PATH", path), patch(
+        "gate.handlers.ADMIN_IDS", [ADMIN]
+    ), patch.multiple(
         settings,
         LIVE=True,
         GROUP_ID=ALUMNI_GROUP,
@@ -690,7 +697,7 @@ def _group_cmd(chat_id=-100555, title="Cohort 2026", chat_type="supergroup", adm
     reply = AsyncMock()
     return SimpleNamespace(
         effective_chat=SimpleNamespace(id=chat_id, type=chat_type, title=title),
-        effective_user=SimpleNamespace(id=1 if admin else 999999),
+        effective_user=SimpleNamespace(id=ADMIN if admin else 999999),
         effective_message=SimpleNamespace(reply_text=reply),
         message=SimpleNamespace(reply_text=reply),
     ), reply
@@ -795,6 +802,20 @@ def test_env_seed_is_a_bootstrap_only(live):
     assert -100666 in gh.monitored_ids()
 
 
+def test_env_seed_skips_the_alumni_group(live):
+    """The destination in GATE_MONITORED_GROUP_IDS is ignored, not watched.
+
+    /gate_watch and the auto-watch promotion both refuse the destination, but
+    the env seed is the path with no human in the loop to see the refusal —
+    pasting the alumni id into the variable is a plausible slip, and watching
+    the destination would nudge people about the group they are already in.
+    """
+    asyncio.run(gh.load_monitored([MONITORED, ALUMNI_GROUP]))
+
+    assert ALUMNI_GROUP not in gh.monitored_ids()
+    assert MONITORED in gh.monitored_ids()   # the rest of the list still seeds
+
+
 def test_groups_command_lists_what_is_watched(live):
     update, reply = _group_cmd(chat_id=-100555)
     asyncio.run(gh.watch_command(update, _ctx()))
@@ -835,7 +856,7 @@ def test_promotion_to_admin_starts_watching(live):
 
     assert gh.is_monitored(-100555)
     # Admins are told, so an unintended one can be undone.
-    assert ctx.bot.send_message.await_args.kwargs["chat_id"] == 1
+    assert ctx.bot.send_message.await_args.kwargs["chat_id"] == ADMIN
 
 
 def test_watched_group_from_promotion_is_immediately_live(live):
