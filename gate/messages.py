@@ -1,4 +1,5 @@
 """User-facing copy for the Alumni Gate. HTML parse mode throughout."""
+from config import ADMIN_CONTACT
 
 # The reply-keyboard button that enters the gate from the bot's main menu. The
 # gate owns this label because it also uses it as its entry filter.
@@ -9,7 +10,7 @@ COMING_SOON = "🎓 The Alumni group is coming soon — stay tuned! ✨"
 
 NOT_CONFIGURED = (
     "⚙️ The Alumni group hasn't been configured yet. Please try again a little "
-    "later, or contact an admin."
+    f"later, or contact {ADMIN_CONTACT}."
 )
 
 # Not in any of the community groups, so not eligible. Worded as "we can't find
@@ -22,14 +23,14 @@ NOT_IN_ANY_GROUP = (
     "can't start you off just yet.\n\n"
     "If you <b>are</b> in one, you may be messaging me from a different Telegram "
     "account than the one you use there — try again from that account. Otherwise, "
-    "message an admin and they'll sort it out. 💬"
+    f"message {ADMIN_CONTACT} and they'll sort it out. 💬"
 )
 
 # Every eligibility lookup failed, so we genuinely don't know. Never refuse on
 # this — a network blip must not read as "you don't belong".
 ELIGIBILITY_UNAVAILABLE = (
     "⚠️ I couldn't check your group membership just now. Please try again in a "
-    "minute — if it keeps happening, message an admin."
+    f"minute — if it keeps happening, message {ADMIN_CONTACT}."
 )
 
 # ── Group nudge (posted publicly, tags the person) ──────────────────────────────
@@ -58,7 +59,9 @@ GROUP_ANNOUNCE_ALREADY_BUTTON = "✅ I'm already in it"
 # Callback answers — a private popup only the person who tapped can see, so the
 # group never learns who tapped what.
 CB_ALREADY_MEMBER = "✅ Confirmed — you're in the Alumni group. I won't ask you again."
-CB_NOT_CONFIGURED = "⚙️ The Alumni group isn't set up yet. Try again later or contact an admin."
+CB_NOT_CONFIGURED = (
+    f"⚙️ The Alumni group isn't set up yet. Try again later or contact {ADMIN_CONTACT}."
+)
 
 # They said they're already in, but the membership check disagrees. Said gently:
 # the likeliest explanations are a second Telegram account or having left.
@@ -123,7 +126,7 @@ FORM_NOT_VERIFIED = (
 # Airtable unreachable / not configured — we couldn't verify, so we don't reject.
 CHECK_UNAVAILABLE = (
     "⚠️ I couldn't reach the form records just now. Please try again in a minute — "
-    "if it keeps happening, message an admin."
+    f"if it keeps happening, message {ADMIN_CONTACT}."
 )
 
 # Form verified → ask for the intro (also sent by the background poll).
@@ -173,7 +176,7 @@ ALREADY_REGISTERED = (
 ALREADY_MEMBER = "✅ You're already in the Alumni group — you're all set! 🎉"
 
 LINK_FAILED = (
-    "⚠️ Something went wrong creating your invite link. Please message an admin "
+    f"⚠️ Something went wrong creating your invite link. Please message {ADMIN_CONTACT} "
     "and we'll sort it out."
 )
 

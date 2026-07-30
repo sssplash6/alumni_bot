@@ -1,4 +1,5 @@
 # messages.py
+from config import ADMIN_CONTACT
 
 SPHERES = [
     "Technology",
@@ -31,7 +32,7 @@ START_CLOSED = "🎓 Welcome to the Alumni System of Freshman Academy."
 
 APPS_CLOSED = "Applications are currently closed. Stay tuned for the next round!"
 ALREADY_REGISTERED = (
-    "You're already registered. If you need to make changes, please contact the admin."
+    f"You're already registered. If you need to make changes, please contact {ADMIN_CONTACT}."
 )
 REGISTRATION_CANCELLED = (
     "Registration cancelled. You can start again with /mentor or /mentee."

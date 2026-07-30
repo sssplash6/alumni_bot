@@ -15,6 +15,13 @@ if not ADMIN_IDS:
 del _raw_admin_ids
 DB_PATH: str = os.environ.get("DB_PATH", str(Path(__file__).parent / "alumni_bot.db"))
 
+# The @username users are told to contact when the bot can't help them — most
+# importantly when it has just refused them, where "contact an admin" leaves a
+# person who believes they belong with nowhere to go. Lives here, not in a copy
+# module, because all three features quote it and every one of them already
+# imports config.
+ADMIN_CONTACT: str = os.environ.get("ADMIN_CONTACT", "@gapyearingdoesntsuck").strip()
+
 # ── Database backups ────────────────────────────────────────────────────────────
 # The DB holds every mentor/mentee application, fair submission and alumni-gate
 # classification. None of it is recoverable from Telegram, so snapshots are

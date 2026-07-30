@@ -113,6 +113,17 @@ def test_in_both_chats_gets_the_post_and_is_asked_for_a_name(live):
     assert asyncio.run(edb.get_user(555))["status"] == "awaiting_name"
 
 
+def test_the_refusal_names_who_to_contact(live):
+    """"Contact an admin" leaves someone who believes they belong nowhere to go."""
+    from config import ADMIN_CONTACT
+
+    from event import messages as emsg
+
+    assert ADMIN_CONTACT.startswith("@")
+    assert ADMIN_CONTACT in emsg.NOT_ALUMNI
+    assert "an admin" not in emsg.NOT_ALUMNI
+
+
 def test_in_neither_chat_is_told_the_event_is_alumni_only(live):
     ctx = _ctx(in_group=False, in_channel=False)
     update, reply = _dm()

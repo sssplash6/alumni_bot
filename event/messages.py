@@ -4,6 +4,7 @@ English, to match the rest of the bot's copy (the Elysium and gate flows speak
 English to this same audience). The event post itself is whatever an admin sets
 with /event_set_post, so its language is theirs to choose.
 """
+from config import ADMIN_CONTACT
 
 # The reply-keyboard button that enters the flow. This module owns the label
 # because it doubles as the entry filter — changing it means anyone holding a
@@ -17,7 +18,7 @@ COMING_SOON = "📅 Event registration is coming soon — stay tuned! ✨"
 
 NOT_CONFIGURED = (
     "⚙️ The event hasn't been set up yet. Please try again a little later, or "
-    "contact an admin."
+    f"contact {ADMIN_CONTACT}."
 )
 
 # In neither chat. No link is offered: handing an outsider a way in would defeat
@@ -28,7 +29,7 @@ NOT_ALUMNI = (
     "register you.\n\n"
     "If you <b>are</b> an alum, you may be messaging me from a different "
     "Telegram account than the one you use there — try again from that account. "
-    "Otherwise, message an admin. 💬"
+    f"Otherwise, message {ADMIN_CONTACT}. 💬"
 )
 
 # In exactly one of the two. {what} is "group" or "channel".
@@ -55,14 +56,14 @@ CONTINUE_BUTTON = "Finish registering ▸"
 # Couldn't mint the link.
 LINK_FAILED = (
     "⚠️ Something went wrong creating your invite link. Please try again in a "
-    "minute — if it keeps happening, message an admin."
+    f"minute — if it keeps happening, message {ADMIN_CONTACT}."
 )
 
 # Every membership lookup failed, so we genuinely don't know. Never refuse on
 # this — a network blip must not read as "you're not an alum".
 CHECK_UNAVAILABLE = (
     "⚠️ I couldn't check your membership just now. Please try again in a minute — "
-    "if it keeps happening, message an admin."
+    f"if it keeps happening, message {ADMIN_CONTACT}."
 )
 
 ASK_NAME = (
@@ -73,7 +74,7 @@ NAME_REQUIRED = "Please type your full name to continue."
 
 REGISTERED = (
     "🎉 <b>You're registered, {name}!</b>\n\n"
-    "See you at the event. If your plans change, just message an admin."
+    f"See you at the event. If your plans change, just message {ADMIN_CONTACT}."
 )
 
 ALREADY_REGISTERED = (
