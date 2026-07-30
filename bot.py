@@ -149,15 +149,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     is_open = await db.is_applications_open()
-    text = msg.START_OPEN if is_open else msg.START_CLOSED
-    # Only announce the event while it can actually be registered for — a notice
-    # pointing at a button that answers "coming soon" is worse than no notice.
-    if event.active():
-        text += msg.START_EVENT_NOTICE.format(button=event.MENU_BUTTON)
     await update.message.reply_text(
-        text,
-        parse_mode="HTML",
-        disable_web_page_preview=True,
+        msg.START_OPEN if is_open else msg.START_CLOSED,
         reply_markup=_main_kb(is_open),
     )
 
@@ -894,8 +887,6 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     audience = await _broadcast_audience()
     is_open = await db.is_applications_open()
     text = msg.START_OPEN if is_open else msg.START_CLOSED
-    if event.active():
-        text += msg.START_EVENT_NOTICE.format(button=event.MENU_BUTTON)
 
     args = context.args or []
     if not args or args[0].lower() != "confirm":

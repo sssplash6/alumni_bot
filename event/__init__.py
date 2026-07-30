@@ -24,12 +24,11 @@ image.
 from .db import all_user_ids, init_schema
 from .handlers import register, start_registration
 from .messages import MENU_BUTTON
-from .settings import START_PAYLOAD, active
+from .settings import START_PAYLOAD
 
 __all__ = [
     "MENU_BUTTON",
     "START_PAYLOAD",
-    "active",
     "all_user_ids",
     "init_schema",
     "register",

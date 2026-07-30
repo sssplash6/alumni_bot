@@ -9,6 +9,7 @@ from telegram.error import Forbidden
 
 import bot
 import database as db
+import messages as msg
 from event import db as edb
 from event import settings as event_settings
 from gate import db as gdb
@@ -167,20 +168,14 @@ def test_every_send_failing_still_reports(live):
     assert "Delivered: 0" in reply.await_args_list[-1].args[0]
 
 
-def test_broadcast_carries_the_event_notice_when_live(live):
-    _seed_mentor(100)
-    update, _, ctx = _dm(args=["confirm"])
-
-    with patch.multiple(event_settings, LIVE=True, GROUP_ID=-1, CHANNEL_ID=-2):
-        asyncio.run(bot.broadcast_command(update, ctx))
-
-    assert "Now open" in ctx.bot.send_message.await_args.kwargs["text"]
-
-
-def test_broadcast_omits_the_notice_when_the_event_is_dormant(live):
+def test_broadcast_sends_the_plain_landing_message(live):
+    """The point is the keyboard, not the copy — the text is just the welcome."""
     _seed_mentor(100)
     update, _, ctx = _dm(args=["confirm"])
 
     asyncio.run(bot.broadcast_command(update, ctx))
 
-    assert "Now open" not in ctx.bot.send_message.await_args.kwargs["text"]
+    kwargs = ctx.bot.send_message.await_args.kwargs
+    assert kwargs["text"] == msg.START_CLOSED
+    labels = [b.text for row in kwargs["reply_markup"].keyboard for b in row]
+    assert any("Instagram" in label for label in labels)
