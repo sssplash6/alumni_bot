@@ -336,7 +336,7 @@ def test_a_name_with_html_is_escaped(live):
 
 # ── The join follow-up ──────────────────────────────────────────────────────────
 
-def test_joining_the_missing_chat_picks_them_up(live):
+def test_joining_the_missing_chat_nudges_them_to_continue(live):
     ctx = _ctx(in_group=True, in_channel=False)
     update, _ = _dm()
     asyncio.run(eh.start_registration(update, ctx))
@@ -346,8 +346,41 @@ def test_joining_the_missing_chat_picks_them_up(live):
     ctx2 = _ctx(in_group=True, in_channel=True)
     asyncio.run(eh.on_chat_member(_joined(CHANNEL), ctx2))
 
-    assert asyncio.run(edb.get_user(555))["status"] == "awaiting_name"
+    kwargs = ctx2.bot.send_message.await_args.kwargs
+    assert kwargs["chat_id"] == 555
+    assert "in both" in kwargs["text"].lower()
+    # The button is the only way on: the conversation isn't active out here, so a
+    # typed name would land on no handler.
+    buttons = [b for row in kwargs["reply_markup"].inline_keyboard for b in row]
+    assert any(b.callback_data == eh.ENTER_CB for b in buttons)
+    # The post is not sent from here — start_registration owns that.
+    ctx2.bot.copy_message.assert_not_awaited()
+
+
+def test_the_nudge_button_completes_the_whole_journey(live):
+    """group-only -> link -> joins channel -> taps Finish -> post -> name -> done."""
+    ctx = _ctx(in_group=True, in_channel=False)
+    update, _ = _dm()
+    asyncio.run(eh.start_registration(update, ctx))
+
+    ctx2 = _ctx(in_group=True, in_channel=True)
+    asyncio.run(eh.on_chat_member(_joined(CHANNEL), ctx2))
+
+    # Tapping the nudge re-enters the conversation, which is what sends the post.
+    tapped, reply = _dm()
+    tapped.callback_query = SimpleNamespace(answer=AsyncMock())
+    state = asyncio.run(eh.start_registration(tapped, ctx2))
+
+    assert state == eh.ASK_NAME
     ctx2.bot.copy_message.assert_awaited_once()
+    assert asyncio.run(edb.get_user(555))["status"] == "awaiting_name"
+
+    named, done_reply = _dm(text="Miroli Karimov")
+    asyncio.run(eh.got_name(named, ctx2))
+
+    row = asyncio.run(edb.get_user(555))
+    assert row["status"] == "registered"
+    assert row["full_name"] == "Miroli Karimov"
 
 
 def test_join_is_ignored_for_someone_not_mid_registration(live):

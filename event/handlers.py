@@ -138,7 +138,10 @@ async def _send_post(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> bool:
     """
     post = await db.get_post()
     if post is None:
-        logger.error("Event post is not set — run /event_set_post.")
+        logger.error(
+            "Event post is not set, so nobody can register — reply to the post "
+            "with /event_set_post."
+        )
         return False
     from_chat_id, message_id = post
     try:
@@ -276,16 +279,15 @@ async def on_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if missing is None or missing:
         return
 
-    async def reply(text, **kwargs):
-        return await context.bot.send_message(chat_id=user.id, text=text, **kwargs)
-
+    # Nudge them back into the flow rather than continuing it here. The post and
+    # the name question belong to start_registration, and asking for a name from
+    # outside it would be a trap: the ConversationHandler would not be in its
+    # ASK_NAME state, so a typed reply would land on no handler at all. The
+    # button re-enters properly, and re-runs the checks while it's there.
     try:
-        await reply(msg.JOIN_DETECTED, parse_mode="HTML")
-        if not await _send_post(context, user.id):
-            return
-        await db.mark_awaiting_name(user.id, user.username, user.first_name)
-        await reply(
-            msg.ASK_NAME,
+        await context.bot.send_message(
+            chat_id=user.id,
+            text=msg.JOIN_DETECTED,
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton(msg.CONTINUE_BUTTON, callback_data=ENTER_CB)
@@ -298,7 +300,7 @@ async def on_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.warning("Couldn't DM user %d after they joined", user.id)
         return
 
-    logger.info("Event: user %d completed both chats, asked for their name", user.id)
+    logger.info("Event: user %d is now in both chats, nudged to continue", user.id)
 
 
 # ── Admin ───────────────────────────────────────────────────────────────────────

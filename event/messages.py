@@ -6,8 +6,11 @@ with /event_set_post, so its language is theirs to choose.
 """
 
 # The reply-keyboard button that enters the flow. This module owns the label
-# because it doubles as the entry filter.
-MENU_BUTTON = "📅 Register for the event"
+# because it doubles as the entry filter — changing it means anyone holding a
+# cached keyboard has to /start again before the button works.
+#
+# Names the topic rather than the date, so it doesn't go stale if the event moves.
+MENU_BUTTON = "📸 Instagram Personal Branding"
 
 # Shown while the master switch is off.
 COMING_SOON = "📅 Event registration is coming soon — stay tuned! ✨"
@@ -38,10 +41,16 @@ JOIN_THE_OTHER = (
 )
 JOIN_BUTTON = "Join the alumni {what} ▸"
 
-# They joined the missing chat and are now eligible.
-JOIN_DETECTED = "✅ Great — you're in both now! Let's finish your registration."
+# They joined the missing chat and are now eligible. Ends on the button rather
+# than a question, because the button is what actually continues the flow —
+# telling them to type here would strand them, since the conversation isn't
+# active until they tap.
+JOIN_DETECTED = (
+    "✅ <b>Great — you're in both now!</b>\n\n"
+    "Tap below to finish registering for the event."
+)
 
-CONTINUE_BUTTON = "Continue registration ▸"
+CONTINUE_BUTTON = "Finish registering ▸"
 
 # Couldn't mint the link.
 LINK_FAILED = (
