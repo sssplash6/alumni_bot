@@ -10,7 +10,7 @@ with /event_set_post, so its language is theirs to choose.
 # cached keyboard has to /start again before the button works.
 #
 # Names the topic rather than the date, so it doesn't go stale if the event moves.
-MENU_BUTTON = "📸 Instagram Personal Branding"
+MENU_BUTTON = "Instagram Personal Branding"
 
 # Shown while the master switch is off.
 COMING_SOON = "📅 Event registration is coming soon — stay tuned! ✨"
