@@ -38,26 +38,6 @@ _last_error_alert: datetime | None = None
 # Telegram caps a message at 4096 chars; leave room for the surrounding copy.
 _ERROR_DETAIL_CHARS = 1200
 
-# Hard-fixed reviewers who receive Admissions Program Fair registrations and
-# can approve/reject them. Carried over from the freshbot.
-APF_REVIEWER_CHAT_IDS: list[int] = [7185151344, 310366883, 8836861446, 7926199790]
-
-# Groups the bot belongs to as a member. Elysium Fair registrants are
-# auto-approved if they belong to at least one of these, else auto-rejected.
-ELIGIBILITY_GROUP_IDS: list[int] = [
-    -1002821462310,
-    -1004479515242,
-    -1003735467341,
-]
-
-# The Admissions Program / Elysium Fair group itself. The bot is an admin here,
-# so it can mint single-use invite links for approved registrants. Membership in
-# this group also counts as eligible (they're obviously already in Elysium).
-APF_FAIR_GROUP_ID: int = -1003712688053
-
-# Telegram chat-member statuses that count as "currently in the group".
-_PRESENT_STATUSES = {"creator", "administrator", "member", "restricted"}
-
 # People who manually confirm "Join Elysium pre-2025" requests.
 ELYSIUM_CONFIRMER_CHAT_IDS: list[int] = [8836861446]
 
@@ -87,11 +67,6 @@ ELYSIUM_GROUP_INVITE_LINK = "https://t.me/+L_mi3g_VSlk5ZGQ9"
     MENTEE_CONSENT,
     MENTEE_CONFIRM,
 ) = range(7, 15)
-
-(
-    APF_NAME,
-    APF_COHORT,
-) = range(15, 17)
 
 (
     ELYSIUM_NAME,
@@ -144,13 +119,11 @@ def _main_kb(is_open: bool) -> ReplyKeyboardMarkup:
     if is_open:
         rows = [
             [KeyboardButton(msg.BTN_MENTOR), KeyboardButton(msg.BTN_MENTEE)],
-            [KeyboardButton(msg.BTN_APF)],
             [KeyboardButton(msg.BTN_ELYSIUM)],
             [KeyboardButton(gate.MENU_BUTTON)],
         ]
     else:
         rows = [
-            [KeyboardButton(msg.BTN_APF)],
             [KeyboardButton(msg.BTN_ELYSIUM)],
             [KeyboardButton(gate.MENU_BUTTON)],
         ]
@@ -700,205 +673,6 @@ async def admin_match(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
 
 
-# ── Admissions Program Fair ─────────────────────────────────────────────────────
-
-async def _is_eligibility_group_member(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
-    """True if the user currently belongs to at least one eligibility group."""
-    for group_id in (*ELIGIBILITY_GROUP_IDS, APF_FAIR_GROUP_ID):
-        try:
-            member = await context.bot.get_chat_member(chat_id=group_id, user_id=user_id)
-        except Exception:
-            logger.exception(
-                "Failed to check membership of user %d in group %d", user_id, group_id
-            )
-            continue
-        if member.status in _PRESENT_STATUSES:
-            return True
-    return False
-
-
-async def _create_fair_invite_link(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> str | None:
-    """Mint a single-use invite link to the fair group, or None on failure."""
-    try:
-        invite = await context.bot.create_chat_invite_link(
-            chat_id=APF_FAIR_GROUP_ID,
-            name=f"Fair {user_id}"[:32],
-            member_limit=1,
-        )
-        return invite.invite_link
-    except Exception:
-        logger.exception("Failed to create fair invite link for user_id=%d", user_id)
-        return None
-
-
-async def apf_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    if update.callback_query:
-        await update.callback_query.answer()
-    chat_id = update.effective_chat.id
-
-    existing = await db.apf_get_submission(chat_id)
-    if existing and existing["status"] == "approved":
-        invite_link = await _create_fair_invite_link(context, chat_id)
-        if invite_link:
-            await update.effective_message.reply_text(
-                msg.APF_ALREADY_APPROVED.format(invite_link=invite_link),
-                parse_mode="HTML",
-                disable_web_page_preview=True,
-            )
-        else:
-            await update.effective_message.reply_text(msg.APF_ALREADY_APPROVED_NO_LINK)
-        return ConversationHandler.END
-    if existing and existing["status"] == "pending":
-        await update.effective_message.reply_text(msg.APF_ALREADY_PENDING)
-        return ConversationHandler.END
-
-    # Forward the configured fair post first, then start the registration questions.
-    post_chat_id = await db.get_setting("apf_post_chat_id")
-    post_message_id = await db.get_setting("apf_post_message_id")
-    if post_chat_id and post_message_id:
-        try:
-            await context.bot.copy_message(
-                chat_id=chat_id,
-                from_chat_id=int(post_chat_id),
-                message_id=int(post_message_id),
-            )
-        except Exception:
-            logger.exception("Failed to forward APF post to chat_id=%d", chat_id)
-            await update.effective_message.reply_text(msg.APF_INTRO, parse_mode="HTML")
-    else:
-        await update.effective_message.reply_text(msg.APF_INTRO, parse_mode="HTML")
-
-    context.user_data.clear()
-    await update.effective_message.reply_text(msg.APF_ASK_NAME)
-    return APF_NAME
-
-
-async def apf_got_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    name = update.message.text.strip()
-    if not name:
-        await update.message.reply_text(msg.APF_NAME_REQUIRED)
-        return APF_NAME
-    context.user_data["apf_full_name"] = name
-    await update.message.reply_text(msg.APF_ASK_COHORT)
-    return APF_COHORT
-
-
-async def apf_got_cohort(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    cohort = update.message.text.strip()
-    if not cohort:
-        await update.message.reply_text(msg.APF_COHORT_REQUIRED)
-        return APF_COHORT
-
-    chat_id = update.effective_chat.id
-    full_name = context.user_data.get("apf_full_name", "")
-    user = update.effective_user
-    first_name = user.first_name or "Unknown"
-    username = user.username
-
-    await db.apf_save_submission(chat_id, username, first_name, full_name, cohort)
-
-    # Auto-decide based on membership in the eligibility groups: a member of at
-    # least one group is approved, everyone else is rejected. No manual review.
-    # Approved submissions stay in the DB (status "approved") and are viewable
-    # via /apf_list — that's the confirmed-participants list.
-    is_member = await _is_eligibility_group_member(context, chat_id)
-    if is_member:
-        await db.apf_set_status(chat_id, "approved")
-        invite_link = await _create_fair_invite_link(context, chat_id)
-        if invite_link:
-            await update.message.reply_text(
-                msg.APF_APPROVED.format(invite_link=invite_link),
-                parse_mode="HTML",
-                disable_web_page_preview=True,
-            )
-        else:
-            await update.message.reply_text(msg.APF_APPROVED_NO_LINK)
-    else:
-        await db.apf_set_status(chat_id, "rejected")
-        await update.message.reply_text(msg.APF_REJECTED)
-
-    return ConversationHandler.END
-
-
-async def _apf_decision(update: Update, context: ContextTypes.DEFAULT_TYPE, decision: str) -> None:
-    query = update.callback_query
-    await query.answer()
-    if update.effective_user.id not in APF_REVIEWER_CHAT_IDS:
-        return
-
-    applicant_chat_id = int(query.data.split(":")[1])
-    submission = await db.apf_get_submission(applicant_chat_id)
-    if not submission or submission["status"] != "pending":
-        await query.answer(msg.APF_REVIEWER_ALREADY_DECIDED, show_alert=True)
-        return
-
-    base_text = query.message.text or ""
-    send_kwargs: dict = {}
-    if decision == "approved":
-        await db.apf_set_status(applicant_chat_id, "approved")
-        invite_link = await _create_fair_invite_link(context, applicant_chat_id)
-        if invite_link:
-            applicant_msg = msg.APF_APPROVED.format(invite_link=invite_link)
-            send_kwargs = {"parse_mode": "HTML", "disable_web_page_preview": True}
-        else:
-            applicant_msg = msg.APF_APPROVED_NO_LINK
-        reviewer_confirmation = msg.APF_REVIEWER_APPROVED
-    else:
-        await db.apf_set_status(applicant_chat_id, "rejected")
-        applicant_msg = msg.APF_REJECTED
-        reviewer_confirmation = msg.APF_REVIEWER_REJECTED
-
-    try:
-        await context.bot.send_message(
-            chat_id=applicant_chat_id, text=applicant_msg, **send_kwargs
-        )
-    except Exception:
-        logger.exception("Failed to notify APF applicant chat_id=%d", applicant_chat_id)
-
-    await query.edit_message_text(
-        text=f"{base_text}\n\n{reviewer_confirmation}", reply_markup=None
-    )
-
-
-async def apf_approve_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await _apf_decision(update, context, "approved")
-
-
-async def apf_reject_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await _apf_decision(update, context, "rejected")
-
-
-async def apf_set_post(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_user.id not in APF_REVIEWER_CHAT_IDS:
-        return
-    reply = update.message.reply_to_message
-    if not reply:
-        await update.message.reply_text(msg.APF_SET_POST_USAGE)
-        return
-    await db.set_setting("apf_post_chat_id", str(reply.chat.id))
-    await db.set_setting("apf_post_message_id", str(reply.message_id))
-    await update.message.reply_text(msg.APF_SET_POST_SUCCESS)
-
-
-async def apf_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_user.id not in APF_REVIEWER_CHAT_IDS:
-        return
-    approved = await db.apf_get_by_status(["approved"])
-    if not approved:
-        await update.message.reply_text(msg.APF_LIST_EMPTY)
-        return
-    lines = [msg.APF_LIST_HEADER.format(count=len(approved))]
-    for idx, sub in enumerate(approved, start=1):
-        username_part = f" (@{sub['username']})" if sub.get("username") else ""
-        lines.append(msg.APF_LIST_ENTRY.format(
-            idx=idx,
-            full_name=sub["full_name"],
-            cohort=sub["cohort"],
-            username_part=username_part,
-        ))
-    await update.message.reply_text("\n".join(lines))
-
-
 # ── Elysium pre-2025 ────────────────────────────────────────────────────────────
 
 async def elysium_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1202,20 +976,6 @@ def build_app() -> Application:
         per_message=False,
     )
 
-    apf_conv = ConversationHandler(
-        entry_points=[
-            CommandHandler("fair", apf_start, filters=_private),
-            MessageHandler(_private & filters.Text([msg.BTN_APF]), apf_start),
-            CallbackQueryHandler(apf_start, pattern=r"^start:fair$"),
-        ],
-        states={
-            APF_NAME: [MessageHandler(_private & filters.TEXT & ~filters.COMMAND, apf_got_name)],
-            APF_COHORT: [MessageHandler(_private & filters.TEXT & ~filters.COMMAND, apf_got_cohort)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel, filters=_private)],
-        per_message=False,
-    )
-
     elysium_conv = ConversationHandler(
         entry_points=[
             CommandHandler("elysium", elysium_start, filters=_private),
@@ -1233,12 +993,7 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("start", start, filters=_private))
     app.add_handler(mentor_conv)
     app.add_handler(mentee_conv)
-    app.add_handler(apf_conv)
     app.add_handler(elysium_conv)
-    app.add_handler(CommandHandler("apf_set_post", apf_set_post, filters=_private))
-    app.add_handler(CommandHandler("apf_list", apf_list, filters=_private))
-    app.add_handler(CallbackQueryHandler(apf_approve_callback, pattern=r"^apf_approve:"))
-    app.add_handler(CallbackQueryHandler(apf_reject_callback, pattern=r"^apf_reject:"))
     app.add_handler(CommandHandler("elysium_set_post", elysium_set_post, filters=_private))
     app.add_handler(CommandHandler("elysium_list", elysium_list, filters=_private))
     app.add_handler(CommandHandler("open", admin_open, filters=_private))

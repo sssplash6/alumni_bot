@@ -97,7 +97,7 @@ services:
     #      messages sent during the restart window.
     #   2. The ConversationHandlers have no persistence configured, so their
     #      state lives in memory. A restart drops every half-finished
-    #      mentor/mentee/fair application on the floor.
+    #      mentor/mentee/Elysium application on the floor.
     # Deploy deliberately, when nobody is mid-flow. Change to `commit` if you
     # decide you would rather have push-to-deploy.
     autoDeployTrigger: 'off'
