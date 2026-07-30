@@ -375,6 +375,8 @@ ID_REPORT = (
 ADDED_TO_GROUP = (
     "🤖 I was just added to <b>{title}</b>\n"
     "Chat ID: <code>{chat_id}</code>\n\n"
-    "Put this in <code>.env</code> — e.g. <code>GATE_MONITORED_GROUP_IDS</code> or "
-    "<code>GATE_GROUP_ID</code> — then restart me."
+    "To have the Alumni Gate watch this group, just <b>make me an admin</b> here — "
+    "that's all, no config and no restart. Or run /gate_watch in the group.\n\n"
+    "Only <code>GATE_GROUP_ID</code> (the one alumni group everyone should end up "
+    "in) is set in the environment, and it's already configured."
 )
