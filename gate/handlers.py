@@ -704,6 +704,13 @@ async def on_check_form(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await reply(msg.CHECK_UNAVAILABLE, parse_mode="HTML")
         return
     if not result["complete"]:
+        # Neither tg_id nor the stored username found them. A pre-tg_id row whose
+        # author has since changed their handle is invisible to both, so ask for
+        # the name on the submission rather than declaring it missing.
+        if formcheck.name_lookup_available():
+            await db.mark_awaiting_name(user.id, user.username, user.first_name)
+            await reply(msg.ASK_FULL_NAME, parse_mode="HTML")
+            return
         await reply(msg.FORM_NOT_VERIFIED, parse_mode="HTML")
         return
 
@@ -728,10 +735,37 @@ async def _issue_invite(
     return link
 
 
+async def _on_full_name(update: Update, user, text: str) -> None:
+    """They've typed the name on their submission; look the form up by it."""
+    name = " ".join(text.split())
+    if len(name) < 3 or " " not in name:
+        await update.message.reply_text(msg.FULL_NAME_REQUIRED, parse_mode="HTML")
+        return
+
+    result = await formcheck.lookup_by_name(name)
+    if result is None:
+        await update.message.reply_text(msg.CHECK_UNAVAILABLE, parse_mode="HTML")
+        return
+    if not result["complete"]:
+        # Left on awaiting_name so another spelling can be tried without
+        # starting over.
+        await update.message.reply_text(
+            msg.FULL_NAME_NOT_FOUND.format(name=html.escape(name)), parse_mode="HTML"
+        )
+        return
+
+    await db.mark_awaiting_intro(
+        user.id, user.username, user.first_name, result.get("name") or name
+    )
+    logger.info("Gate matched user %d to a submission by full name", user.id)
+    await update.message.reply_text(msg.ASK_INTRO, parse_mode="HTML")
+
+
 async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Private DMs. The only text the gate acts on is the intro from someone whose
-    form is already verified — receiving it is the final gate; we don't store or
-    forward it, since they re-post it in the alumni group after joining.
+    """Private DMs. The gate acts on two kinds of text: the full name of someone
+    whose form couldn't be found by tg_id or username, and the intro from someone
+    whose form is verified — receiving that is the final gate, and we don't store
+    or forward it, since they re-post it in the alumni group after joining.
 
     Registered by the host bot's build_app AFTER every ConversationHandler, so
     this never steals input from another flow.
@@ -752,12 +786,16 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         return
 
-    if row["status"] != "awaiting_intro":
-        return  # not expecting an intro from this person
-
     text = (update.message.text or "").strip()
     if not text:
         return
+
+    if row["status"] == "awaiting_name":
+        await _on_full_name(update, user, text)
+        return
+
+    if row["status"] != "awaiting_intro":
+        return  # not expecting anything from this person
 
     # The brief asks for 50-100 words; hold the gate if this clearly isn't that.
     words = len(text.split())

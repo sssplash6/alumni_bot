@@ -180,6 +180,34 @@ def _result_from(records: list[dict]) -> dict:
     return {"complete": False, "name": _name_from(records[0].get("fields", {}))}
 
 
+def _normalize_name(name: str | None) -> str | None:
+    """Lowercase, trim, and collapse runs of whitespace.
+
+    Real rows carry stray spacing from form input — "Sevinch  Xasanova" is in the
+    live base — so an exact comparison misses people who typed their name
+    perfectly well.
+    """
+    if not name:
+        return None
+    collapsed = " ".join(name.split()).lower()
+    return collapsed or None
+
+
+def _name_lookup_field() -> str | None:
+    """The full-name field to match on, if it's configured and usable."""
+    field = settings.AIRTABLE_NAME_FIELD
+    if not field:
+        return None
+    if not _field_name_safe(field):
+        logger.error(
+            "GATE_AIRTABLE_NAME_FIELD=%r can't be used in a formula — it must be "
+            "the field's NAME and must not contain { } ' \" or \\",
+            field,
+        )
+        return None
+    return field
+
+
 def _legacy_lookup_field() -> str | None:
     """The username field to fall back on, if it's configured and usable."""
     field = settings.AIRTABLE_USERNAME_FIELD
@@ -247,6 +275,52 @@ async def lookup(tg_id: int, username: str | None = None) -> dict | None:
             return {**_result_from(records), "matched_by": "username"}
 
     return {"complete": False, "name": None, "matched_by": None}
+
+
+def name_lookup_available() -> bool:
+    """Whether the by-name fallback can be offered at all."""
+    return settings.airtable_ready() and _name_lookup_field() is not None
+
+
+async def lookup_by_name(full_name: str) -> dict | None:
+    """Last-resort match on a student-typed full name.
+
+    For submissions that predate tg_id AND whose stored username no longer
+    matches — people change handles, and the row keeps whatever they typed at the
+    time, so the username fallback quietly stops finding them.
+
+    This is the weakest of the three keys and deliberately the last one tried: a
+    name is not secret, so someone who knows an alum's name could claim their
+    submission. It is acceptable only because the caller has already established
+    the person is inside the community — see the watched-group eligibility check
+    in handlers.start_onboarding — and because the alternative is stranding real
+    alumni with no route in at all.
+
+    Both sides are normalized, and a two-word name is also tried reversed, since
+    "Xasanova Sevinch" and "Sevinch Xasanova" are the same person.
+    """
+    normalized = _normalize_name(full_name)
+    field = _name_lookup_field()
+    if not normalized or not field or not settings.airtable_ready():
+        return None
+
+    # Airtable has no whitespace-collapsing function, so squeeze runs of spaces
+    # by repeated substitution — twice handles up to four consecutive spaces,
+    # which covers the real data.
+    expr = "LOWER(TRIM(SUBSTITUTE(SUBSTITUTE({%s},'  ',' '),'  ',' ')))" % field
+    candidates = [normalized]
+    parts = normalized.split(" ")
+    if len(parts) == 2:
+        candidates.append(f"{parts[1]} {parts[0]}")
+
+    formula = "OR(%s)" % ",".join(f"{expr}='{c}'" for c in candidates)
+    records = await _query(formula)
+    if records is None:
+        return None
+    if not records:
+        return {"complete": False, "name": None, "matched_by": None}
+    logger.info("Matched a submission by full name %r", normalized)
+    return {**_result_from(records), "matched_by": "full_name"}
 
 
 async def fetch_completed_for(

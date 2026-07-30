@@ -1055,3 +1055,104 @@ def test_promotion_is_idempotent(live):
 
     # Already watched (seeded), so no duplicate notification.
     ctx.bot.send_message.assert_not_awaited()
+
+
+# ── The by-name fallback ────────────────────────────────────────────────────────
+
+def _found(name="Sevinch Xasanova"):
+    return {"complete": True, "name": name, "matched_by": "full_name"}
+
+
+_MISSED = {"complete": False, "name": None, "matched_by": None}
+
+
+def _check_update(user=None):
+    reply = AsyncMock()
+    query = SimpleNamespace(
+        answer=AsyncMock(), message=SimpleNamespace(reply_text=reply)
+    )
+    return SimpleNamespace(
+        callback_query=query, effective_user=user or _user()
+    ), reply
+
+
+def test_form_not_found_asks_for_a_name_when_the_fallback_is_on(live):
+    ctx = _ctx(member_status=None)
+    update, reply = _check_update()
+
+    with patch.object(gh.formcheck, "lookup", AsyncMock(return_value=_MISSED)), \
+            patch.object(gh.formcheck, "name_lookup_available", lambda: True):
+        asyncio.run(gh.on_check_form(update, ctx))
+
+    assert "full name" in reply.await_args.args[0].lower()
+    assert asyncio.run(gdb.get_user(555))["status"] == "awaiting_name"
+
+
+def test_form_not_found_says_so_when_the_fallback_is_off(live):
+    """Without a name field configured the old message is still the right one."""
+    ctx = _ctx(member_status=None)
+    update, reply = _check_update()
+
+    with patch.object(gh.formcheck, "lookup", AsyncMock(return_value=_MISSED)), \
+            patch.object(gh.formcheck, "name_lookup_available", lambda: False):
+        asyncio.run(gh.on_check_form(update, ctx))
+
+    assert "can't see your completed form" in reply.await_args.args[0].lower()
+
+
+def test_a_matching_name_moves_them_to_the_intro(live):
+    asyncio.run(gdb.mark_awaiting_name(555, "alice", "Alice"))
+    update, reply = _dm("Sevinch Xasanova")
+
+    with patch.object(gh.formcheck, "lookup_by_name", AsyncMock(return_value=_found())):
+        asyncio.run(gh.on_private_text(update, _ctx()))
+
+    row = asyncio.run(gdb.get_user(555))
+    assert row["status"] == "awaiting_intro"
+    assert row["full_name"] == "Sevinch Xasanova"
+    assert "intro" in reply.await_args.args[0].lower()
+
+
+def test_an_unmatched_name_leaves_them_free_to_try_again(live):
+    asyncio.run(gdb.mark_awaiting_name(555, "alice", "Alice"))
+    update, reply = _dm("Nobody Here")
+
+    with patch.object(gh.formcheck, "lookup_by_name", AsyncMock(return_value=_MISSED)):
+        asyncio.run(gh.on_private_text(update, _ctx()))
+
+    # Still awaiting_name, so another spelling can be tried without starting over.
+    assert asyncio.run(gdb.get_user(555))["status"] == "awaiting_name"
+    assert "still can't find" in reply.await_args.args[0].lower()
+
+
+def test_a_single_word_is_not_accepted_as_a_full_name(live):
+    asyncio.run(gdb.mark_awaiting_name(555, "alice", "Alice"))
+    update, reply = _dm("Sevinch")
+
+    with patch.object(gh.formcheck, "lookup_by_name", AsyncMock()) as lookup:
+        asyncio.run(gh.on_private_text(update, _ctx()))
+
+    lookup.assert_not_awaited()
+    assert "first and last" in reply.await_args.args[0].lower()
+
+
+def test_an_airtable_outage_during_name_lookup_is_not_a_rejection(live):
+    asyncio.run(gdb.mark_awaiting_name(555, "alice", "Alice"))
+    update, reply = _dm("Sevinch Xasanova")
+
+    with patch.object(gh.formcheck, "lookup_by_name", AsyncMock(return_value=None)):
+        asyncio.run(gh.on_private_text(update, _ctx()))
+
+    assert "couldn't reach" in reply.await_args.args[0].lower()
+    assert asyncio.run(gdb.get_user(555))["status"] == "awaiting_name"
+
+
+def test_a_name_typed_by_someone_awaiting_an_intro_is_not_a_name_lookup(live):
+    """The two text states must not bleed into each other."""
+    asyncio.run(gdb.mark_awaiting_intro(555, "alice", "Alice", None))
+    update, _ = _dm("Sevinch Xasanova")
+
+    with patch.object(gh.formcheck, "lookup_by_name", AsyncMock()) as lookup:
+        asyncio.run(gh.on_private_text(update, _ctx()))
+
+    lookup.assert_not_awaited()

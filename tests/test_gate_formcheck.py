@@ -1,5 +1,6 @@
 # tests/test_gate_formcheck.py
 """The Airtable client's edge cases, all found in review rather than in the wild."""
+import asyncio
 from unittest.mock import patch
 
 import pytest
@@ -335,3 +336,69 @@ async def test_poll_with_nobody_waiting_makes_no_request():
     ):
         assert await fc.fetch_completed_for([]) is None
     assert called == []
+
+
+# ── The by-name fallback ────────────────────────────────────────────────────────
+
+def test_normalize_name_collapses_real_world_spacing():
+    # "Sevinch  Xasanova" is in the live base — a double space from form input.
+    assert fc._normalize_name("Sevinch  Xasanova") == "sevinch xasanova"
+    assert fc._normalize_name("  ALI   Karimov ") == "ali karimov"
+    assert fc._normalize_name("") is None
+    assert fc._normalize_name(None) is None
+
+
+def test_name_lookup_is_unavailable_without_a_configured_field():
+    with patch.multiple(settings, AIRTABLE_NAME_FIELD=""):
+        assert fc.name_lookup_available() is False
+
+
+def test_name_lookup_refuses_a_formula_unsafe_field():
+    with patch.multiple(settings, AIRTABLE_NAME_FIELD='Full "Name"'):
+        assert fc.name_lookup_available() is False
+
+
+def test_lookup_by_name_tries_both_word_orders():
+    """"Xasanova Sevinch" and "Sevinch Xasanova" are the same person."""
+    captured = {}
+
+    async def _fake_query(formula):
+        captured["formula"] = formula
+        return []
+
+    with patch.multiple(settings, AIRTABLE_NAME_FIELD="Full Name"), \
+            patch.object(fc, "_query", _fake_query):
+        asyncio.run(fc.lookup_by_name("Sevinch Xasanova"))
+
+    assert "'sevinch xasanova'" in captured["formula"]
+    assert "'xasanova sevinch'" in captured["formula"]
+    # Whitespace is squeezed on the Airtable side too, or stored double spaces
+    # never match.
+    assert "SUBSTITUTE" in captured["formula"]
+
+
+def test_lookup_by_name_reports_a_hit():
+    async def _fake_query(formula):
+        return [{"fields": {"Full Name": "Sevinch  Xasanova"}}]
+
+    with patch.multiple(settings, AIRTABLE_NAME_FIELD="Full Name"), \
+            patch.object(fc, "_query", _fake_query):
+        result = asyncio.run(fc.lookup_by_name("sevinch xasanova"))
+
+    assert result["complete"] is True
+    assert result["matched_by"] == "full_name"
+
+
+def test_lookup_by_name_distinguishes_no_match_from_no_answer():
+    """None means "couldn't ask" and must not read as "you didn't submit"."""
+    async def _no_rows(formula):
+        return []
+
+    async def _failed(formula):
+        return None
+
+    with patch.multiple(settings, AIRTABLE_NAME_FIELD="Full Name"):
+        with patch.object(fc, "_query", _no_rows):
+            assert asyncio.run(fc.lookup_by_name("A B"))["complete"] is False
+        with patch.object(fc, "_query", _failed):
+            assert asyncio.run(fc.lookup_by_name("A B")) is None

@@ -11,6 +11,8 @@
     'member'         -> already in the alumni group; nothing to do.
     'nudged'         -> not in alumni; tagged in the group.
     'awaiting_form'  -> started the bot; onboarding form not yet verified.
+    'awaiting_name'  -> not found by tg_id or username; asked for their full
+                        name so the form can be looked up by that instead.
     'awaiting_intro' -> form verified; waiting for the student's intro.
     'registered'     -> fully onboarded and handed a one-time invite link.
 
@@ -24,7 +26,10 @@ import aiosqlite
 
 from config import DB_PATH
 
-VALID_STATUSES = ("member", "nudged", "awaiting_form", "awaiting_intro", "registered")
+VALID_STATUSES = (
+    "member", "nudged", "awaiting_form", "awaiting_name", "awaiting_intro",
+    "registered",
+)
 
 
 def _now() -> str:
@@ -165,6 +170,15 @@ async def mark_awaiting_form(
 ) -> None:
     """Record that the user started the bot and is working on the form."""
     await _upsert(user_id, "awaiting_form", username=username, first_name=first_name)
+
+
+async def mark_awaiting_name(
+    user_id: int, username: str | None, first_name: str | None
+) -> None:
+    """Record that we've asked for their full name to look the form up by."""
+    await _upsert(
+        user_id, "awaiting_name", username=username, first_name=first_name
+    )
 
 
 async def mark_awaiting_intro(

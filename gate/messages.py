@@ -129,6 +129,28 @@ CHECK_UNAVAILABLE = (
     f"if it keeps happening, message {ADMIN_CONTACT}."
 )
 
+# Not found by tg_id or by the stored username. Asked instead of refused: a
+# submission that predates tg_id keeps whatever handle they had at the time, and
+# people change handles, so both keys can miss someone who really did submit.
+ASK_FULL_NAME = (
+    "🔎 I can't find your form by your Telegram account.\n\n"
+    "If you filled it in a while back, your username may have changed since — so "
+    "let's try your name instead.\n\n"
+    "Please send me the <b>full name exactly as you wrote it on the form</b>."
+)
+
+FULL_NAME_REQUIRED = (
+    "Please send your <b>full name</b> — first and last, as written on the form."
+)
+
+FULL_NAME_NOT_FOUND = (
+    "🔎 I still can't find a submission under <b>{name}</b>.\n\n"
+    "Try it exactly as you typed it on the form — or the other way round "
+    "(surname first). If you haven't actually submitted the form yet, use the "
+    "button in the message above.\n\n"
+    f"Still stuck? Message {ADMIN_CONTACT} and they'll sort it out. 💬"
+)
+
 # Form verified → ask for the intro (also sent by the background poll).
 ASK_INTRO = (
     "✅ <b>Form verified — nice!</b>\n\n"
