@@ -148,6 +148,34 @@ NO_MATCH_MENTEE = (
 
 # ── Admin ─────────────────────────────────────────────────────────────────────
 
+# What /broadcast actually sends. Deliberately NOT the /start landing text: that
+# one stays a bare welcome, while this exists to announce something. Sent with
+# parse_mode="HTML" and disable_web_page_preview=True — without the latter the
+# map link drags a preview card in and the message stops being scannable.
+OFFICE_MAP_URL = "https://yandex.uz/maps/-/CPhRZWNb"
+
+BROADCAST_MESSAGE = (
+    "📸 <b>How to promote a project or personal brand on Instagram?</b>\n\n"
+    "This Friday the Freshman Academy office hosts a special meeting for students "
+    "and alumni with <b>Mirolim</b> — founder of his own production studio and "
+    "author of a blog with an audience of over 25,000.\n\n"
+    "Seven years in media: he started filming on an ordinary phone straight after "
+    "lyceum, and today leads a team of 10. His studio has worked with Yandex "
+    "Uzbekistan, Uzum Bank, Coca-Cola, PepsiCo, HONOR and UzBAT, and shot music "
+    "videos with budgets in the tens of thousands.\n\n"
+    "He'll cover:\n"
+    "— building a personal brand through Instagram;\n"
+    "— creating content that attracts a quality audience;\n"
+    "— promoting your own project or business;\n"
+    "— turning a blog into a real professional tool.\n\n"
+    "Afterwards you can ask questions, discuss your own projects, and get "
+    "practical advice.\n\n"
+    "📅 Friday, 31 July · 🕐 13:00 (Tashkent)\n"
+    f'📍 <a href="{OFFICE_MAP_URL}">Freshman Academy office</a>\n\n'
+    "Tap <b>{button}</b> below to register. Open to Freshman Academy students and "
+    "alumni. 🎓"
+)
+
 BROADCAST_PREVIEW = (
     "📣 <b>Broadcast preview</b>\n\n"
     "This would go to <b>{count}</b> people, replacing their keyboard with the "

@@ -874,7 +874,11 @@ async def _broadcast_audience() -> set[int]:
 
 
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send everyone the current landing message, refreshing their keyboard.
+    """Announce the event to everyone, refreshing their keyboard as it goes.
+
+    The announcement carries the current keyboard, which is what retires a
+    renamed button — a reply keyboard only changes when a message brings a new
+    one. So this does both jobs at once.
 
     Two steps by design: bare /broadcast reports who would get it and shows the
     exact text, and only /broadcast confirm sends. Messaging the entire user base
@@ -886,7 +890,7 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     audience = await _broadcast_audience()
     is_open = await db.is_applications_open()
-    text = msg.START_OPEN if is_open else msg.START_CLOSED
+    text = msg.BROADCAST_MESSAGE.format(button=event.MENU_BUTTON)
 
     args = context.args or []
     if not args or args[0].lower() != "confirm":

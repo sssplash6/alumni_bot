@@ -9,6 +9,7 @@ from telegram.error import Forbidden
 
 import bot
 import database as db
+import event
 import messages as msg
 from event import db as edb
 from event import settings as event_settings
@@ -168,14 +169,31 @@ def test_every_send_failing_still_reports(live):
     assert "Delivered: 0" in reply.await_args_list[-1].args[0]
 
 
-def test_broadcast_sends_the_plain_landing_message(live):
-    """The point is the keyboard, not the copy — the text is just the welcome."""
+def test_broadcast_announces_the_event_not_the_welcome(live):
+    """It exists to announce something; /start stays the bare welcome."""
+    _seed_mentor(100)
+    update, _, ctx = _dm(args=["confirm"])
+
+    asyncio.run(bot.broadcast_command(update, ctx))
+
+    text = ctx.bot.send_message.await_args.kwargs["text"]
+    assert text != msg.START_CLOSED
+    assert "Mirolim" in text
+    assert "31 July" in text
+    assert msg.OFFICE_MAP_URL in text
+    # It names the button to tap, resolved from the live label rather than
+    # hardcoded, so a rename can't leave the copy pointing at nothing.
+    assert event.MENU_BUTTON in text
+
+
+def test_broadcast_still_refreshes_the_keyboard(live):
     _seed_mentor(100)
     update, _, ctx = _dm(args=["confirm"])
 
     asyncio.run(bot.broadcast_command(update, ctx))
 
     kwargs = ctx.bot.send_message.await_args.kwargs
-    assert kwargs["text"] == msg.START_CLOSED
     labels = [b.text for row in kwargs["reply_markup"].keyboard for b in row]
-    assert any("Instagram" in label for label in labels)
+    assert event.MENU_BUTTON in labels
+    # The map link must not drag a preview card in behind it.
+    assert kwargs["disable_web_page_preview"] is True
