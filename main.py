@@ -4,6 +4,7 @@ import logging
 
 from telegram import Update
 
+import event
 import gate
 from bot import build_app
 from database import init_db
@@ -16,8 +17,9 @@ logging.basicConfig(
 
 async def main() -> None:
     await init_db()
-    # The gate owns its own tables, so it creates them itself.
+    # The gate and the event flow own their own tables, so they create them.
     await gate.init_schema()
+    await event.init_schema()
     # Which groups it watches lives in the database (managed with /gate_watch),
     # so the in-memory list has to be primed before the first update arrives.
     watching = await gate.load_monitored()

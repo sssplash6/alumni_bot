@@ -23,6 +23,7 @@ from telegram.ext import (
 )
 
 import database as db
+import event
 import gate
 import messages as msg
 from config import ADMIN_IDS, BACKUP_INTERVAL_HOURS, BACKUP_KEEP, BOT_TOKEN
@@ -119,11 +120,13 @@ def _main_kb(is_open: bool) -> ReplyKeyboardMarkup:
     if is_open:
         rows = [
             [KeyboardButton(msg.BTN_MENTOR), KeyboardButton(msg.BTN_MENTEE)],
+            [KeyboardButton(event.MENU_BUTTON)],
             [KeyboardButton(msg.BTN_ELYSIUM)],
             [KeyboardButton(gate.MENU_BUTTON)],
         ]
     else:
         rows = [
+            [KeyboardButton(event.MENU_BUTTON)],
             [KeyboardButton(msg.BTN_ELYSIUM)],
             [KeyboardButton(gate.MENU_BUTTON)],
         ]
@@ -135,6 +138,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # straight over to onboarding instead of showing the main menu.
     if context.args and context.args[0] == gate.START_PAYLOAD:
         await gate.start_onboarding(update, context)
+        return
+    if context.args and context.args[0] == event.START_PAYLOAD:
+        await event.start_registration(update, context)
         return
 
     is_open = await db.is_applications_open()
@@ -1008,6 +1014,10 @@ def build_app() -> Application:
     app.add_handler(
         ChatMemberHandler(on_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER)
     )
+
+    # Event registration owns a ConversationHandler, so it has to come before the
+    # gate for the same reason everything else above does.
+    event.register(app)
 
     # The Alumni Gate goes last: its private-message handlers match broadly, so
     # registering them after every ConversationHandler above means an

@@ -199,6 +199,17 @@ services:
       - key: GATE_VALUES_DOC_URL
         sync: false
 
+      # ---- Event registration (event/settings.py) --------------------------
+      # Requires being in BOTH chats. The bot must be an admin in each, with
+      # "invite users via link". The post is not configured here — it carries an
+      # image, so it's set at runtime by replying with /event_set_post.
+      - key: EVENT_LIVE                 # empty/false = button says "coming soon"
+        sync: false
+      - key: EVENT_GROUP_ID             # the alumni group
+        sync: false
+      - key: EVENT_CHANNEL_ID           # the alumni channel
+        sync: false
+
       # Deliberately NOT declared here, so the defaults in config.py and
       # gate/settings.py stay the single source of truth. Add any of them in the
       # Dashboard (Environment tab) if you need to override:
