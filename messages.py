@@ -29,11 +29,18 @@ START_CLOSED = "🎓 Welcome to the Alumni System of Freshman Academy."
 
 # Appended to the landing text only while the event is live, so the menu never
 # advertises a button that answers "coming soon". Sent with parse_mode="HTML".
+#
+# The venue is a link, so nobody has to ask where the office is. Callers send
+# this with disable_web_page_preview=True — without it Telegram appends a map
+# card and the notice stops being scannable.
+OFFICE_MAP_URL = "https://yandex.uz/maps/-/CPhRZWNb"
+
 START_EVENT_NOTICE = (
     "\n\n📸 <b>Now open — Instagram Personal Branding Event</b>\n"
     "How to grow a project or personal brand on Instagram, with Mirolim — "
     "founder of his own production studio and a blog of 25,000+ followers.\n\n"
-    "📅 Friday, 31 July · 🕐 13:00 (Tashkent) · 📍 Freshman Academy office\n\n"
+    "📅 Friday, 31 July · 🕐 13:00 (Tashkent)\n"
+    f'📍 <a href="{OFFICE_MAP_URL}">Freshman Academy office</a>\n\n'
     "Tap <b>{button}</b> below to register. Alumni only."
 )
 
