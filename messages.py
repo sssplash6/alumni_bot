@@ -27,6 +27,16 @@ DEVOTE_TIME_OPTIONS = ["1–2 hrs/week", "3–5 hrs/week", "5+ hrs/week"]
 START_OPEN = "🎓 Welcome to the Alumni System of Freshman Academy."
 START_CLOSED = "🎓 Welcome to the Alumni System of Freshman Academy."
 
+# Appended to the landing text only while the event is live, so the menu never
+# advertises a button that answers "coming soon". Sent with parse_mode="HTML".
+START_EVENT_NOTICE = (
+    "\n\n📸 <b>Now open — Instagram Personal Branding Event</b>\n"
+    "How to grow a project or personal brand on Instagram, with Mirolim — "
+    "founder of his own production studio and a blog of 25,000+ followers.\n\n"
+    "📅 Friday, 31 July · 🕐 13:00 (Tashkent) · 📍 Freshman Academy office\n\n"
+    "Tap <b>{button}</b> below to register. Alumni only."
+)
+
 # ── General ──────────────────────────────────────────────────────────────────
 
 APPS_CLOSED = "Applications are currently closed. Stay tuned for the next round!"

@@ -558,3 +558,47 @@ def test_get_post_is_none_until_set(tmp_path):
 def test_counts_are_zero_filled(live):
     counts = asyncio.run(edb.counts())
     assert counts == {"awaiting_join": 0, "awaiting_name": 0, "registered": 0}
+
+
+# ── The /start landing notice ───────────────────────────────────────────────────
+
+def _start_update():
+    reply = AsyncMock()
+    return SimpleNamespace(
+        args=[],
+        message=SimpleNamespace(reply_text=reply),
+        effective_user=_user(),
+        effective_message=SimpleNamespace(reply_text=reply),
+        callback_query=None,
+    ), reply
+
+
+def test_start_announces_the_event_while_it_is_live(tmp_path):
+    import bot
+
+    path = str(tmp_path / "test.db")
+    with patch("config.DB_PATH", path), patch("database.DB_PATH", path), \
+            patch.multiple(settings, LIVE=True, GROUP_ID=GROUP, CHANNEL_ID=CHANNEL):
+        update, reply = _start_update()
+        ctx = SimpleNamespace(args=[], bot=MagicMock())
+        with patch("database.is_applications_open", AsyncMock(return_value=False)):
+            asyncio.run(bot.start(update, ctx))
+
+        text = reply.await_args.args[0]
+        assert "Now open" in text
+        assert event.MENU_BUTTON in text
+
+
+def test_start_stays_quiet_about_a_dormant_event(tmp_path):
+    """A notice pointing at a button that says "coming soon" is worse than none."""
+    import bot
+
+    path = str(tmp_path / "test.db")
+    with patch("config.DB_PATH", path), patch("database.DB_PATH", path), \
+            patch.multiple(settings, LIVE=False, GROUP_ID=GROUP, CHANNEL_ID=CHANNEL):
+        update, reply = _start_update()
+        ctx = SimpleNamespace(args=[], bot=MagicMock())
+        with patch("database.is_applications_open", AsyncMock(return_value=False)):
+            asyncio.run(bot.start(update, ctx))
+
+        assert "Now open" not in reply.await_args.args[0]
