@@ -196,3 +196,10 @@ async def get_post() -> tuple[int, int] | None:
     if not chat_id or not message_id:
         return None
     return int(chat_id), int(message_id)
+
+
+async def all_user_ids() -> set[int]:
+    """Everyone who has started registering, for broadcasts."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT user_id FROM event_registrations") as cur:
+            return {row[0] for row in await cur.fetchall()}

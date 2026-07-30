@@ -21,7 +21,7 @@ EVENT_CHANNEL_ID are filled in — see settings.py for the environment contract.
 The post itself is set at runtime with /event_set_post, since it carries an
 image.
 """
-from .db import init_schema
+from .db import all_user_ids, init_schema
 from .handlers import register, start_registration
 from .messages import MENU_BUTTON
 from .settings import START_PAYLOAD, active
@@ -30,6 +30,7 @@ __all__ = [
     "MENU_BUTTON",
     "START_PAYLOAD",
     "active",
+    "all_user_ids",
     "init_schema",
     "register",
     "start_registration",

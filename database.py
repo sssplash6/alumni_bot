@@ -402,6 +402,24 @@ async def elysium_get_all() -> list[dict]:
     return [dict(r) for r in rows]
 
 
+async def all_user_chat_ids() -> set[int]:
+    """Everyone who has registered through one of this module's flows.
+
+    For broadcasts. A reply keyboard only changes when the bot sends a message
+    carrying a new one, so reaching everybody is the only way to retire a button
+    label — and a bot can only message people who have messaged it first, which
+    is exactly the set recorded here.
+
+    The gate and the event own their own tables; the caller unions those in.
+    """
+    ids: set[int] = set()
+    async with aiosqlite.connect(DB_PATH) as db:
+        for table in ("mentors", "mentees", "elysium_submissions"):
+            async with db.execute(f"SELECT chat_id FROM {table}") as cur:
+                ids.update(row[0] for row in await cur.fetchall())
+    return ids
+
+
 # ── Backups ─────────────────────────────────────────────────────────────────────
 
 def _prune_backups(directory: Path, pattern: str, keep: int) -> None:

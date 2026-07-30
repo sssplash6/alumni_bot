@@ -1,4 +1,5 @@
 # bot.py
+import asyncio
 import html
 import logging
 import traceback
@@ -38,6 +39,10 @@ _last_error_alert: datetime | None = None
 
 # Telegram caps a message at 4096 chars; leave room for the surrounding copy.
 _ERROR_DETAIL_CHARS = 1200
+
+# Seconds between broadcast sends. Telegram allows roughly 30 messages/second
+# overall; this sits well under it, because a 429 mid-run would stall the rest.
+_BROADCAST_PAUSE = 0.05
 
 # People who manually confirm "Join Elysium pre-2025" requests.
 ELYSIUM_CONFIRMER_CHAT_IDS: list[int] = [8836861446]
@@ -860,6 +865,79 @@ async def backup_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.info("Database backed up to %s", path)
 
 
+# ── Broadcast ──────────────────────────────────────────────────────────────────
+
+async def _broadcast_audience() -> set[int]:
+    """Everyone the bot can message, across all three features.
+
+    A reply keyboard only changes when the bot sends a message carrying a new
+    one, so a broadcast is the only way to retire a renamed button — until then
+    people keep tapping a label that no longer matches any entry filter.
+    """
+    ids = await db.all_user_chat_ids()
+    ids |= await gate.all_user_ids()
+    ids |= await event.all_user_ids()
+    return ids
+
+
+async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send everyone the current landing message, refreshing their keyboard.
+
+    Two steps by design: bare /broadcast reports who would get it and shows the
+    exact text, and only /broadcast confirm sends. Messaging the entire user base
+    is not undoable, and it is one keystroke away from a command an admin runs
+    while poking around.
+    """
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+
+    audience = await _broadcast_audience()
+    is_open = await db.is_applications_open()
+    text = msg.START_OPEN if is_open else msg.START_CLOSED
+    if event.active():
+        text += msg.START_EVENT_NOTICE.format(button=event.MENU_BUTTON)
+
+    args = context.args or []
+    if not args or args[0].lower() != "confirm":
+        await update.message.reply_text(
+            msg.BROADCAST_PREVIEW.format(count=len(audience)), parse_mode="HTML"
+        )
+        await update.message.reply_text(
+            text, parse_mode="HTML", disable_web_page_preview=True,
+            reply_markup=_main_kb(is_open),
+        )
+        return
+
+    await update.message.reply_text(
+        msg.BROADCAST_STARTED.format(count=len(audience)), parse_mode="HTML"
+    )
+
+    sent = failed = 0
+    for chat_id in sorted(audience):
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+                reply_markup=_main_kb(is_open),
+            )
+            sent += 1
+        except Exception:
+            # Overwhelmingly people who have blocked the bot or deleted their
+            # account. Counted rather than logged per-user: at this volume the
+            # tracebacks would bury everything else.
+            failed += 1
+        # Telegram allows roughly 30 messages/second overall. Pace well under it,
+        # because one 429 here would stall the rest of the run.
+        await asyncio.sleep(_BROADCAST_PAUSE)
+
+    logger.info("Broadcast finished: %d sent, %d failed", sent, failed)
+    await update.message.reply_text(
+        msg.BROADCAST_DONE.format(sent=sent, failed=failed), parse_mode="HTML"
+    )
+
+
 # ── Errors ─────────────────────────────────────────────────────────────────────
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1016,6 +1094,7 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("review", admin_review, filters=_private))
     app.add_handler(CallbackQueryHandler(review_decision, pattern=r"^review:"))
 
+    app.add_handler(CommandHandler("broadcast", broadcast_command, filters=_private))
     app.add_handler(CommandHandler("backup", backup_command, filters=_private))
     app.add_handler(CommandHandler("id", id_command))
     app.add_handler(

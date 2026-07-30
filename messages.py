@@ -165,6 +165,19 @@ NO_MATCH_MENTEE = (
 
 # ── Admin ─────────────────────────────────────────────────────────────────────
 
+BROADCAST_PREVIEW = (
+    "📣 <b>Broadcast preview</b>\n\n"
+    "This would go to <b>{count}</b> people, replacing their keyboard with the "
+    "current one. Here's exactly what they'd see 👇\n\n"
+    "Send <code>/broadcast confirm</code> to actually do it."
+)
+BROADCAST_STARTED = "📣 Broadcasting to {count} people — I'll report back when done."
+BROADCAST_DONE = (
+    "✅ <b>Broadcast finished</b>\n\n"
+    "Delivered: {sent}\n"
+    "Failed: {failed} <i>(blocked the bot, or deleted their account)</i>"
+)
+
 APPS_OPENED = (
     "Applications are now open.\n"
     "Mentors: /mentor | Mentees: /mentee"

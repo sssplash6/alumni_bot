@@ -341,3 +341,14 @@ async def stats() -> dict[str, int]:
             result[row[0]] = row[1]
         result["total"] = sum(result[s] for s in VALID_STATUSES)
         return result
+
+
+async def all_user_ids() -> set[int]:
+    """Everyone the gate has a row for, for broadcasts.
+
+    Includes people it only ever nudged: they have messaged the bot if they
+    tapped an announcement button, and a send that fails is counted and skipped.
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT user_id FROM gate_users") as cur:
+            return {row[0] for row in await cur.fetchall()}

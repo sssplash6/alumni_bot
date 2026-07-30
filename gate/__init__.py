@@ -17,7 +17,7 @@ conversation always wins.
 Everything stays dormant until GATE_LIVE is set and GATE_GROUP_ID points at the
 alumni group — see settings.py for the full environment contract.
 """
-from .db import init_schema
+from .db import all_user_ids, init_schema
 from .handlers import load_monitored, register, start_onboarding
 from .messages import MENU_BUTTON
 from .settings import START_PAYLOAD
@@ -25,6 +25,7 @@ from .settings import START_PAYLOAD
 __all__ = [
     "MENU_BUTTON",
     "START_PAYLOAD",
+    "all_user_ids",
     "init_schema",
     "load_monitored",
     "register",
