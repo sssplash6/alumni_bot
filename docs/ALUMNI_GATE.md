@@ -71,7 +71,18 @@ keeps naming them until they actually register. Neither outcome is posted in the
 group; being corrected in front of everyone would be worse than the problem.
 
 It re-posts every `GATE_ANNOUNCE_INTERVAL_DAYS` (default 5), deleting the previous
-one so exactly one is live. `/gate_announce` posts one immediately.
+one so exactly one is live. A brand-new group has no recorded timestamp, so the
+hourly job treats it as due and announces within the hour of the bot being
+promoted — no command required.
+
+`/gate_announce` skips that wait, and **the group's own admins can run it**, not
+just the bot's. A leader who has just added the bot needs to see that it worked;
+an hour of nothing looks identical to a broken setup. Requiring `ADMIN_IDS` here
+would have put a Render env var edit and a restart between every new group and its
+first announcement, which is exactly what auto-watch exists to avoid. Group admins
+are confined to their own group — the fan-out to every watched group stays with
+bot admins, since the fallback would otherwise turn one mistyped command into a
+cross-group broadcast.
 
 The re-post job ticks hourly but only acts where the stored timestamp says a group
 is due, so restarting the bot can't spam a fresh announcement and the cadence
@@ -197,7 +208,9 @@ full name captured from the Airtable submission is kept on the roster.
   auto-watch is off, or the bot was already an admin before this shipped
 - `/gate_unwatch` — (admins, in a group) stop watching it
 - `/gate_groups` — (admins) list the watched groups and the destination
-- `/gate_announce` — (admins) post/re-post the pinned announcement
+- `/gate_announce` — post/re-post the pinned announcement. **Any admin of the
+  group it's run in** may use it, in that group only; bot admins may also run it
+  in a DM to hit every watched group at once. See `_announce_targets`
 - `/gate_stats` — (admins) counts per status
 - `/gate_list` — (admins) the roster of everyone admitted through the gate
 

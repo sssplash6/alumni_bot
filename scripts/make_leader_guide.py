@@ -184,8 +184,8 @@ def build():
     story.append(Paragraph("How to set it up", h1b))
     story.append(Spacer(1, 3))
     story.append(Paragraph(
-        "Two steps, about a minute. There are no commands to run and nothing to "
-        "send us.", kicker))
+        "Three steps, about a minute. Nothing to send us, no settings to change on "
+        "our side.", kicker))
     story.append(Spacer(1, 12))
 
     story.append(step_table([
@@ -193,17 +193,9 @@ def build():
         f"<b>Members → Add member → {BOT}</b>",
         "Promote it to <b>Administrator</b>, and turn on the <b>Pin messages</b> "
         "right.",
+        "Send <b>/gate_announce</b> in the group. The bot posts the join "
+        "announcement and pins it. That's your confirmation the setup worked.",
     ], style=lead, gap=6))
-
-    story.append(Spacer(1, 14))
-    story.append(panel("That's it — promoting it is the switch-on.", [
-        "The bot enrols the group by itself, then posts and pins the join "
-        "announcement <b>within the hour</b>. You don't run a command, you don't "
-        "send anyone an ID, and nobody has to change a setting on our side to add "
-        "your group.",
-        "If you'd rather not wait for the announcement to appear, ask the core team "
-        "to trigger it straight away.",
-    ], style=lead))
 
     story.append(Spacer(1, 14))
     story.append(Paragraph(
@@ -211,14 +203,6 @@ def build():
         "independently and gets its own announcement, so you choose which groups "
         "take part and you can add more whenever you like.",
         lead,
-    ))
-
-    story.append(Spacer(1, 16))
-    story.append(Paragraph(
-        "Everything after this page is reference — what the bot will post, what "
-        "your members go through, and what to check if a group looks like it isn't "
-        "working. You don't need any of it to get started.",
-        kicker,
     ))
 
     # ── Page 2: reference ───────────────────────────────────────────────────────
@@ -238,6 +222,14 @@ def build():
             "the bot as an ordinary member, nothing happens at all: no enrolment, no "
             "announcement, no error. <b>That is the single most common reason a "
             "group looks broken.</b>",
+            body,
+        ),
+        Spacer(1, 4),
+        Paragraph(
+            "Promoting the bot is also what enrols the group — there is no separate "
+            "opt-in, and nobody has to add your group to a list. Step 3 only "
+            "controls <i>when</i> the announcement appears: skip it and the bot "
+            "posts one by itself within the hour, then re-posts every five days.",
             body,
         ),
     ))
@@ -282,13 +274,17 @@ def build():
     story.append(section(
         "If something looks wrong",
         symptom_table([
-            ("No announcement, an hour later",
+            ("/gate_announce does nothing",
              "Nine times out of ten the bot is a member but not an "
-             "<b>Administrator</b>. Check that first; otherwise tell us and we'll "
-             "look at whether the gate is switched on."),
+             "<b>Administrator</b> — it can't post or read the group without that. "
+             "Fix the rights and run it again. If it still does nothing, tell us: "
+             "the gate may not be switched on yet."),
             ("It isn't pinned",
              "The bot has admin rights but not <b>Pin messages</b>. The "
              "announcement still works unpinned."),
+            ("Nobody ran /gate_announce",
+             "No harm done — the bot re-posts the announcement on its own every few "
+             "days, so a group set up and forgotten still gets one."),
             ("“But I <i>am</i> in the group!”",
              "Almost always a second Telegram account. Ask which account they use "
              "in the alumni group, and have them open the bot from that one."),
@@ -299,11 +295,12 @@ def build():
         ]),
         Spacer(1, 5),
         Paragraph(
-            f"The core team also has <b>/gate_stats</b>, <b>/gate_groups</b>, "
-            "<b>/gate_list</b>, <b>/gate_announce</b> and <b>/gate_unwatch</b>. Those "
-            "check an internal admin list first and stay silent for everyone else, so "
-            f"if you type one and nothing happens, that's why — ask {CONTACT} rather "
-            "than retrying.",
+            "<b>/gate_announce</b> works for anyone who is an admin of the group "
+            "they run it in — no list to be added to. The core team additionally has "
+            "<b>/gate_stats</b>, <b>/gate_groups</b>, <b>/gate_list</b> and "
+            "<b>/gate_unwatch</b>; those check an internal admin list and stay silent "
+            f"for everyone else, so if one does nothing, ask {CONTACT} rather than "
+            "retrying.",
             small,
         ),
     ))

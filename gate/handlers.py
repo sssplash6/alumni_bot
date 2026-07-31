@@ -1053,31 +1053,83 @@ async def groups_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
 
-async def announce_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Post the announcement now, without waiting for the cycle (admins only).
+async def _is_group_admin(
+    context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int
+) -> bool:
+    """True if this person runs *this* group (its creator or an administrator).
 
-    Run inside a monitored group it posts there; run in a DM it posts to every
-    monitored group. Unlike the job this ignores the re-post interval, since an
-    admin asking for it is the whole point.
+    Fails closed: if the status can't be read we don't know, and an unknown
+    answer must not grant anything.
+    """
+    try:
+        member = await context.bot.get_chat_member(chat_id, user_id)
+    except Exception:
+        logger.debug(
+            "Could not read group-admin status for user %d in chat %d",
+            user_id, chat_id,
+        )
+        return False
+    return member.status in ("creator", "administrator")
+
+
+async def _announce_targets(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> list[int] | None:
+    """Which groups this person may announce into. None means "not allowed".
+
+    A **bot admin** gets the full behaviour: inside a monitored group, that group;
+    anywhere else, every monitored group at once.
+
+    A **group leader** — someone who merely runs the group — gets exactly their own
+    group, and only if it's already being watched. They had to add and promote the
+    bot to get this far and they can remove it again, so letting them post the
+    announcement there grants nothing they didn't already have. It also means
+    setting a group up needs no entry on the bot's admin list, which is the whole
+    point of auto-watch.
+
+    The fan-out to every monitored group stays with bot admins. Someone who runs
+    one group has no business announcing in the others, and the fallback in the
+    branch above would otherwise turn "ran it in the wrong chat" into a broadcast.
     """
     chat = update.effective_chat
     user = update.effective_user
+    if chat is None or user is None:
+        return None
 
-    if user is None or not _is_admin(user.id):
-        # Stay silent in groups so members can't discover the command by noise.
-        if chat is not None and chat.type == "private":
-            return
+    if _is_admin(user.id):
+        return [chat.id] if is_monitored(chat.id) else sorted(monitored_ids())
+
+    if (
+        chat.type in ("group", "supergroup")
+        and is_monitored(chat.id)
+        and await _is_group_admin(context, chat.id, user.id)
+    ):
+        return [chat.id]
+
+    return None
+
+
+async def announce_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Post the announcement now, without waiting for the cycle.
+
+    The re-post job would get to a newly watched group within the hour anyway, but
+    a leader who has just added the bot needs to see that it worked — an hour of
+    nothing happening is indistinguishable from a broken setup, and that's the
+    message we'd get instead.
+
+    Unlike the job this ignores the re-post interval, since someone asking for it
+    is the whole point. See _announce_targets for who may run it where.
+    """
+    targets = await _announce_targets(update, context)
+    if targets is None:
+        # Stay silent rather than refusing: a refusal tells every member the
+        # command exists.
         return
 
     if not settings.active():
         await _reply_privately(update, context, msg.ANNOUNCE_DORMANT, parse_mode="HTML")
         return
 
-    targets = (
-        [chat.id]
-        if is_monitored(chat.id)
-        else sorted(monitored_ids())
-    )
     if not targets:
         await _reply_privately(
             update, context, msg.ANNOUNCE_NO_TARGETS, parse_mode="HTML"

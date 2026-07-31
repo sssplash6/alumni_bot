@@ -10,6 +10,7 @@ from telegram.error import BadRequest, Forbidden, NetworkError
 import gate
 from gate import db as gdb
 from gate import handlers as gh
+from gate import messages as gmsg
 from gate import settings
 
 ALUMNI_GROUP = -100999
@@ -231,6 +232,103 @@ def test_announcement_offers_both_buttons(live):
     markup = ctx.bot.send_message.await_args.kwargs["reply_markup"]
     data = [b.callback_data for row in markup.inline_keyboard for b in row]
     assert data == [gh.JOIN_CB, gh.ALREADY_CB]
+
+
+# ── /gate_announce: who may trigger it, and where ───────────────────────────────
+#
+# The group leader case is what makes setting a group up self-service: they add
+# the bot, promote it, and announce, without anyone editing an env var for them.
+
+def _announced_chats(ctx):
+    """Chats the announcement itself went to, ignoring confirmation DMs."""
+    return [
+        call.kwargs["chat_id"]
+        for call in ctx.bot.send_message.await_args_list
+        if call.kwargs.get("text") == gmsg.GROUP_ANNOUNCE
+    ]
+
+
+def test_a_group_leader_can_announce_in_their_own_group(live):
+    """Not on the bot's admin list, but runs the group — the whole point."""
+    ctx = _ctx(member_status=None, watched_status="administrator")
+    update, _ = _group_cmd(chat_id=MONITORED, admin=False)
+
+    asyncio.run(gh.announce_command(update, ctx))
+
+    assert _announced_chats(ctx) == [MONITORED]
+
+
+def test_a_group_leader_cannot_fan_out_to_every_group(live):
+    """Run somewhere unwatched, the bot-admin path falls back to *all* monitored
+    groups. A leader reaching that fallback would turn one mistyped command into a
+    broadcast across groups they have nothing to do with."""
+    asyncio.run(gdb.add_monitored_chat(-100777, "Another cohort"))
+    asyncio.run(gh.refresh_monitored())
+    ctx = _ctx(member_status=None, watched_status="administrator")
+    update, _ = _group_cmd(chat_id=-100999123, admin=False)   # not watched
+
+    asyncio.run(gh.announce_command(update, ctx))
+
+    assert _announced_chats(ctx) == []
+
+
+def test_an_ordinary_member_cannot_announce(live):
+    ctx = _ctx(member_status=None, watched_status="member")
+    update, reply = _group_cmd(chat_id=MONITORED, admin=False)
+
+    asyncio.run(gh.announce_command(update, ctx))
+
+    assert _announced_chats(ctx) == []
+    # Silent, not refused: a refusal advertises that the command exists.
+    reply.assert_not_awaited()
+
+
+def test_an_unreadable_status_grants_nothing(live):
+    """get_chat_member failing means we don't know, and unknown isn't a yes."""
+    ctx = _ctx(member_status=None)
+    ctx.bot.get_chat_member = AsyncMock(side_effect=NetworkError("boom"))
+    update, _ = _group_cmd(chat_id=MONITORED, admin=False)
+
+    asyncio.run(gh.announce_command(update, ctx))
+
+    assert _announced_chats(ctx) == []
+
+
+def test_a_bot_admin_in_a_dm_announces_everywhere(live):
+    asyncio.run(gdb.add_monitored_chat(-100777, "Another cohort"))
+    asyncio.run(gh.refresh_monitored())
+    ctx = _ctx(member_status=None)
+    update, _ = _group_cmd(chat_id=ADMIN, chat_type="private")
+
+    asyncio.run(gh.announce_command(update, ctx))
+
+    assert sorted(_announced_chats(ctx)) == sorted([MONITORED, -100777])
+
+
+def test_a_bot_admin_in_a_group_announces_only_there(live):
+    asyncio.run(gdb.add_monitored_chat(-100777, "Another cohort"))
+    asyncio.run(gh.refresh_monitored())
+    ctx = _ctx(member_status=None)
+    update, _ = _group_cmd(chat_id=MONITORED)
+
+    asyncio.run(gh.announce_command(update, ctx))
+
+    assert _announced_chats(ctx) == [MONITORED]
+
+
+def test_announce_while_dormant_says_so(tmp_path):
+    path = str(tmp_path / "test.db")
+    with patch("config.DB_PATH", path), patch("gate.db.DB_PATH", path), patch(
+        "gate.handlers.ADMIN_IDS", [ADMIN]
+    ), patch.multiple(settings, LIVE=False, GROUP_ID=ALUMNI_GROUP):
+        asyncio.run(gdb.init_schema())
+        ctx = _ctx(member_status=None)
+        update, reply = _group_cmd(chat_id=ADMIN, chat_type="private")
+
+        asyncio.run(gh.announce_command(update, ctx))
+
+        assert "dormant" in reply.await_args.args[0].lower()
+        assert _announced_chats(ctx) == []
 
 
 def test_join_tap_by_non_member_opens_the_bot_silently(live):
