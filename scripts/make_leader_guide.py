@@ -51,8 +51,6 @@ body = ParagraphStyle(
     textColor=INK, alignment=TA_LEFT, spaceAfter=0,
 )
 small = ParagraphStyle("small", parent=body, fontSize=7.9, leading=10.4, textColor=MUTED)
-mono = ParagraphStyle("mono", parent=body, fontName="Courier-Bold", fontSize=8.7,
-                      textColor=ACCENT)
 symptom = ParagraphStyle("symptom", parent=body, fontName="Helvetica-Bold")
 h1 = ParagraphStyle(
     "h1", fontName="Helvetica-Bold", fontSize=18, leading=20, textColor=INK,
@@ -106,10 +104,6 @@ def two_column(rows, label_style, width=32 * mm):
     return t
 
 
-def command_table(rows):
-    return two_column(rows, mono)
-
-
 def symptom_table(rows):
     return two_column(rows, symptom, width=38 * mm)
 
@@ -152,49 +146,48 @@ def build():
     story.append(Spacer(1, 2))
     story.append(Paragraph(
         f"A guide for group leaders &nbsp;·&nbsp; {BOT} &nbsp;·&nbsp; "
-        "everything below takes about five minutes.",
+        "two steps, about a minute, no commands to remember.",
         kicker,
     ))
     story += rule(7, 7)
 
     story.append(section(
-        "1 &nbsp; Set yourself up  (once, before anything else)",
+        "1 &nbsp; Add the bot to your group  —  this is the whole setup",
         step_table([
-            f"Open a private chat with <b>{BOT}</b> and tap <b>Start</b>. The bot "
-            "replies to you privately, and Telegram won't let it message you until "
-            "you've done this.",
-            "Send <b>/id</b> in that chat. It replies with your Telegram ID number.",
-            f"Send that number to <b>{CONTACT}</b> and ask to be added as a bot admin.",
+            f"In the group: <b>Members → Add member → {BOT}</b>.",
+            "Promote it to <b>Administrator</b>, and turn on <b>Pin messages</b>.",
+            "Repeat in each group you want it working in. Every group is handled "
+            "independently and gets its own announcement — you choose which ones, "
+            "and you can add more whenever you like.",
         ]),
         Spacer(1, 4),
-        panel("Until step 3 is done, nothing else works.", [
-            "Every command below checks the admin list first, and for everyone else "
-            "does <b>nothing at all</b> — no error, just silence. That's deliberate: "
-            "it stops members discovering the commands. Don't read it as the bot "
-            "being broken.",
+        panel("That's it. Promoting it is the switch-on.", [
+            "The bot enrols the group by itself, then posts and pins the join "
+            "announcement <b>within the hour</b>. You don't run a command, you "
+            "don't send anyone an ID, and nobody has to change a setting on our "
+            "side to add your group. If you'd rather not wait for the announcement "
+            "to appear, ask the core team to trigger it.",
         ]),
     ))
     story += rule()
 
     story.append(section(
-        "2 &nbsp; Add the bot to your group",
-        step_table([
-            f"In your group: <b>Members → Add member → {BOT}</b>.",
-            "Promote it to <b>Administrator</b> and turn on <b>Pin messages</b>. "
-            "Admin rights are not optional — without them Telegram never tells the "
-            "bot who joins.",
-            "Promoting it <b>is</b> the switch-on: the bot starts watching the group "
-            "by itself and DMs you to confirm. There is nothing to configure.",
-            "Send <b>/gate_announce</b> in the group. The bot posts the join "
-            "announcement and pins it. You're done.",
-        ]),
+        "2 &nbsp; Why Administrator matters",
+        Paragraph(
+            "Admin rights are not a formality — the bot is inert without them. "
+            "Telegram only tells a bot who joins a group if it is an administrator, "
+            "and pinning needs the <b>Pin messages</b> right specifically. If you add "
+            "the bot as an ordinary member, nothing happens at all: no enrolment, no "
+            "announcement, no error. <b>That is the single most common reason a "
+            "group looks broken.</b>",
+            body,
+        ),
     ))
     story += rule()
 
     story.append(section(
         "3 &nbsp; What the bot puts in your group",
-        Paragraph(
-            "Exactly two things ever appear in the group chat:", body),
+        Paragraph("Exactly two things ever appear in the group chat:", body),
         Spacer(1, 3),
         step_table([
             "<b>The pinned announcement</b> — two buttons, <i>Join the Alumni "
@@ -207,48 +200,54 @@ def build():
         Paragraph(
             "<b>Everything else is a private DM.</b> Nobody is tagged in the group "
             "for not having joined, and nobody is corrected in front of everyone. "
-            "Replies to your own commands are DMed to you too, even when you type "
-            "the command in the group.",
+            "You can tell your members that safely.",
             body,
         ),
     ))
     story += rule()
 
     story.append(section(
-        "4 &nbsp; The commands you'll use",
-        Paragraph("<b>Type these in the group:</b>", body),
-        Spacer(1, 3),
-        command_table([
-            ("/gate_announce", "Post and pin the announcement now, without waiting "
-                               "for the five-day cycle."),
-            ("/gate_unwatch", "Stop the bot working in this group. Records are kept."),
-            ("/id", "Get this group's ID number — useful when reporting a problem."),
-        ]),
-        Spacer(1, 5),
-        Paragraph("<b>Type these in your private chat with the bot:</b>", body),
-        Spacer(1, 3),
-        command_table([
-            ("/gate_stats", "How many people are already in, mid-onboarding, or "
-                            "still unengaged."),
-            ("/gate_groups", "Every group the bot is currently watching."),
-            ("/gate_list", "Everyone who has completed registration through the bot."),
-        ]),
+        "4 &nbsp; What a member goes through",
+        Paragraph(
+            "So you can answer “what is this bot?” without asking us: they tap "
+            "<b>Join the Alumni group</b>, which opens the bot in a private chat. "
+            "There it asks them to fill in a short form, read the values doc, and "
+            "send a 50–100 word intro. Once all three are done it hands them a "
+            "personal one-time invite link and they're admitted automatically. "
+            "Tapping <b>I'm already in it</b> is checked against the real group, so "
+            "it can't be used to skip the process.",
+            body,
+        ),
     ))
     story += rule()
 
     story.append(section(
-        "5 &nbsp; When something looks wrong",
+        "5 &nbsp; If something looks wrong",
         symptom_table([
-            ("Commands do nothing",
-             "You're not on the admin list yet — go back to section 1."),
-            ("No announcement",
-             "The bot isn't an admin in the group. Check its rights, then re-run "
-             "<b>/gate_announce</b>."),
-            ("“But I <i>am</i> in it!”",
+            ("No announcement, an hour later",
+             "Nine times out of ten the bot is a member but not an "
+             "<b>Administrator</b>. Check that first; otherwise tell us and we'll "
+             "look at whether the gate is switched on."),
+            ("It isn't pinned",
+             "The bot has admin rights but not <b>Pin messages</b>. The "
+             "announcement still works unpinned."),
+            ("“But I <i>am</i> in the group!”",
              "Almost always a second Telegram account. Ask which account they use "
-             "in the alumni group, and have them message the bot from that one."),
+             "in the alumni group, and have them open the bot from that one."),
+            ("“The bot won't reply to me”",
+             "They need to tap <b>Start</b> in the private chat once. Telegram won't "
+             "let a bot message anyone who hasn't."),
             ("Anything else", f"Message {CONTACT}."),
         ]),
+        Spacer(1, 5),
+        Paragraph(
+            f"The core team also has <b>/gate_stats</b>, <b>/gate_groups</b>, "
+            "<b>/gate_list</b>, <b>/gate_announce</b> and <b>/gate_unwatch</b>. Those "
+            "check an internal admin list first and stay silent for everyone else, so "
+            f"if you type one and nothing happens, that's why — ask {CONTACT} rather "
+            "than retrying.",
+            small,
+        ),
     ))
 
     story.append(Spacer(1, 8))
