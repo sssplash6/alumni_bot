@@ -132,7 +132,9 @@ def test_error_handler_without_exception_attached():
 
 # ── Setup helpers ───────────────────────────────────────────────────────────────
 
-def test_id_command_reports_chat_id_in_private():
+def test_id_command_in_a_group_answers_in_the_admins_dm():
+    """The bot must not leave configuration chatter in a community group."""
+    ctx = _ctx()
     reply = AsyncMock()
     update = SimpleNamespace(
         effective_chat=SimpleNamespace(
@@ -142,9 +144,27 @@ def test_id_command_reports_chat_id_in_private():
         effective_message=SimpleNamespace(reply_text=reply),
     )
 
+    asyncio.run(bot.id_command(update, ctx))
+
+    reply.assert_not_awaited()
+    kwargs = ctx.bot.send_message.await_args.kwargs
+    assert kwargs["chat_id"] == bot.ADMIN_IDS[0]
+    assert "-100222" in kwargs["text"]
+
+
+def test_id_command_replies_in_place_in_a_dm():
+    reply = AsyncMock()
+    update = SimpleNamespace(
+        effective_chat=SimpleNamespace(
+            id=777, type="private", title=None, full_name="Alice"
+        ),
+        effective_user=SimpleNamespace(id=bot.ADMIN_IDS[0]),
+        effective_message=SimpleNamespace(reply_text=reply),
+    )
+
     asyncio.run(bot.id_command(update, _ctx()))
 
-    assert "-100222" in reply.await_args.args[0]
+    assert "777" in reply.await_args.args[0]
 
 
 def test_id_command_ignores_non_admins_in_groups():

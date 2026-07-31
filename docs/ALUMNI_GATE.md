@@ -24,9 +24,30 @@ useful side effect: the tap means the bot has now *seen* that user, which is wha
 makes a `tg://user?id=…` mention resolve into a real ping.
 
 A second constraint shapes the rest: **a bot cannot open a DM.** It can only
-reply to someone who has messaged it first. That's why nudges are posted publicly
-in the group rather than sent privately, and why every admin in `ADMIN_IDS` must
-`/start` the bot before they'll receive alerts.
+reply to someone who has messaged it first — which is also why every admin in
+`ADMIN_IDS` must `/start` the bot before they'll receive alerts.
+
+## What the gate is allowed to post in a group
+
+Exactly two things:
+
+1. **The pinned announcement.**
+2. **The follow-up roundup** — one batched message naming the people who still
+   haven't tapped either of its buttons.
+
+Everything else the gate says to a person is private: a DM, or the popup answer
+to their tap. Nobody is tagged in the group for not having joined, false
+membership claims are corrected in private, and admin command confirmations
+(`/gate_watch`, `/gate_unwatch`, `/gate_announce`, `/id`) are routed to the
+admin's DM even when the command is typed in the group — see `_reply_privately`
+in `gate/handlers.py`. Those confirmations fall back to a reply in place only if
+the DM bounces, since silence would read as the command being broken.
+
+The cost of that rule is real: a detection nudge can only be delivered to someone
+who has messaged the bot before, so for most people it silently fails. They are
+still recorded, and the announcement plus the roundup are what actually reach
+them. The roundup is the one place the gate names people publicly, and it names
+them as a group rather than one message each.
 
 ## The pinned announcement
 
@@ -34,20 +55,20 @@ The bot posts one message per monitored group with two buttons:
 
 | Tap | What happens |
 | --- | --- |
-| **🎓 Join the Alumni group** | Opens the bot on their device, so onboarding starts on the same tap. Nothing is posted publicly — they volunteered, so a tag would be noise. |
+| **🎓 Join the Alumni group** | Opens the bot on their device, so onboarding starts on the same tap. |
 | **✅ I'm already in it** | Recorded as a member so they're never asked again — *if the check agrees*. |
 
 **Both buttons verify.** The second is deliberately not taken at face value:
 the tap already hands us the user ID, so confirming real membership costs one API
 call and no user effort. People tap "already in" to dismiss a message, and
 someone wrongly skipped is skipped permanently — which is precisely the person the
-gate exists to find. When the claim is contradicted they're told privately and
-pointed at the Join button, and **nothing is recorded**, so the next announcement
-reaches them again. The usual cause is a second Telegram account, or having left
+gate exists to find. The usual cause is a second Telegram account, or having left
 the group at some point.
 
-Neither outcome is ever posted in the group. Being publicly corrected would be
-worse than the problem.
+A contradicted claim gets a popup, a DM if the bot can reach them, and a
+`nudged` record — so the claim can't be used to quietly opt out, and the roundup
+keeps naming them until they actually register. Neither outcome is posted in the
+group; being corrected in front of everyone would be worse than the problem.
 
 It re-posts every `GATE_ANNOUNCE_INTERVAL_DAYS` (default 5), deleting the previous
 one so exactly one is live. `/gate_announce` posts one immediately.
@@ -61,10 +82,10 @@ holds even if it restarts mid-cycle.
 ```
 Pinned announcement
   ├─ "I'm already in it" ──▶ verify ──yes──▶ recorded, never asked again
-  │                             └────no──▶ told privately, nothing recorded
+  │                             └────no──▶ popup + DM, recorded as nudged
   └─ "Join the Alumni group" ─▶ verify ──yes──▶ private popup, nothing posted
                                     │ no
-Group nudge ──tap "Register"──▶ onboarding ◀───┘
+DM nudge ──tap "Register"──▶ onboarding ◀──────┘
                                      │
                    in at least one watched group?
                                      │
@@ -225,20 +246,23 @@ detection does nothing, and no jobs are scheduled.
 
 Step 6 matters. Membership checks **fail closed**: if the bot can't read the
 alumni group, everyone is treated as a non-member. That's harmless when one person
-trickles in by posting; it's a mass-mistagging event when 200 people tap a pinned
-message. Verify with your own tap before announcing.
+trickles in by posting; when 200 people tap a pinned message it marks all of them
+`nudged`, and the next roundup names them in the group. Verify with your own tap
+before announcing.
 
 ## Limits worth knowing
 
 - **A true lurker who never joins, posts, or taps stays invisible.** The
   announcement is designed to make the third option nearly frictionless, but it
   can't be forced.
-- **No rate limiting.** Each non-member tap posts a separate public message to
-  the same group, and Telegram caps that at roughly 20/minute per group. A burst
-  of taps will hit the limit: the tag is dropped (logged, and the person isn't
-  marked nudged, so a later tap retries) while the deep-link into onboarding still
-  works. If you expect a large simultaneous wave, add `AIORateLimiter` to the
-  application builder.
+- **A detection nudge usually can't be delivered.** It's a DM, and Telegram only
+  lets a bot DM someone who has messaged it first. The person is recorded either
+  way; the roundup is what reaches them. This is the price of never tagging
+  anyone in the group, and it's deliberate.
+- **The roundup is the only group-wide rate-limit risk.** It batches eight
+  mentions per message and pauses between batches, because Telegram caps a group
+  at roughly 20 messages/minute. If you expect a large simultaneous wave, add
+  `AIORateLimiter` to the application builder.
 - **Invite links don't expire.** They're `member_limit=1`, but a forwarded link
   lets someone else consume the student's slot. Add `expire_date` in
   `_create_invite_link` if that matters.

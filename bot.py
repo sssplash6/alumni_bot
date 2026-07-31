@@ -792,20 +792,32 @@ async def elysium_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 # added somewhere.
 
 async def id_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Report a chat's ID — the tool for filling in the group IDs in .env."""
+    """Report a chat's ID — the tool for filling in the group IDs in .env.
+
+    Run in a group the answer is DMed to the admin who asked, so the bot doesn't
+    leave configuration chatter in a community group. Falling back to a reply in
+    place covers the admin who has never started the bot.
+    """
     chat = update.effective_chat
     user = update.effective_user
     # In groups, restrict to admins so members can't spam it.
     if chat.type != "private" and (user is None or user.id not in ADMIN_IDS):
         return
-    await update.effective_message.reply_text(
-        msg.ID_REPORT.format(
-            title=html.escape(chat.title or chat.full_name or "—"),
-            chat_type=chat.type,
-            chat_id=chat.id,
-        ),
-        parse_mode="HTML",
+
+    text = msg.ID_REPORT.format(
+        title=html.escape(chat.title or chat.full_name or "—"),
+        chat_type=chat.type,
+        chat_id=chat.id,
     )
+    if chat.type == "private":
+        await update.effective_message.reply_text(text, parse_mode="HTML")
+        return
+
+    try:
+        await context.bot.send_message(chat_id=user.id, text=text, parse_mode="HTML")
+    except Exception:
+        logger.warning("Could not DM the chat ID to admin %d — replying in place", user.id)
+        await update.effective_message.reply_text(text, parse_mode="HTML")
 
 
 async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

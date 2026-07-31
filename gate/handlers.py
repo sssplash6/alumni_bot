@@ -22,6 +22,12 @@ the bot has an ID for, which is a genuine ceiling, not an implementation gap.
 Onboarding is gated on an Airtable form submission and then on the person sending
 a real intro, at which point they get a personal single-use invite link.
 
+Everything the gate says to an individual is said in private — a DM, or the
+popup answer to their tap. Exactly two things are ever posted in a community
+group: the pinned announcement, and the follow-up roundup naming the people who
+still haven't tapped either of its buttons. Admin command confirmations are
+routed to the admin's DM for the same reason (see _reply_privately).
+
 Everything here is dormant unless settings.active() — the master switch plus a
 configured alumni group.
 """
@@ -112,6 +118,37 @@ async def load_monitored(seed: list[int] | None = None) -> set[int]:
 
 def _is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
+
+
+async def _reply_privately(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, **kwargs
+) -> None:
+    """Answer a command in the admin's DM, even when it was typed in a group.
+
+    The only two things this bot may put in a community group are the pinned
+    announcement and the follow-up roundup. Admin commands like /gate_watch have
+    to be run inside the group they refer to, so their confirmations are routed
+    out of it instead.
+
+    Falls back to answering in place if the DM bounces — that means the admin has
+    never started the bot, and silence would read as the command being broken.
+    """
+    message = update.effective_message
+    chat = update.effective_chat
+    user = update.effective_user
+
+    if chat is not None and chat.type == "private":
+        await message.reply_text(text, **kwargs)
+        return
+
+    try:
+        await context.bot.send_message(chat_id=user.id, text=text, **kwargs)
+    except Exception:
+        logger.warning(
+            "Could not DM admin %d — answering in chat %s instead",
+            user.id, chat.id if chat else "?",
+        )
+        await message.reply_text(text, **kwargs)
 
 
 async def _is_member(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
@@ -225,30 +262,42 @@ def _parse_ts(raw: str | None) -> datetime | None:
 
 # ── Detection ───────────────────────────────────────────────────────────────────
 
-async def _post_nudge(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user) -> bool:
-    """Tag the user publicly with the Register button. True if it went out."""
+async def _dm_nudge(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user) -> bool:
+    """Privately offer the user the Register button. True if the DM landed.
+
+    Nothing is posted in the group they were seen in. Telegram only lets a bot
+    open a private chat with someone who has messaged it first, so this silently
+    fails for most people — that's expected, and it is the pinned announcement
+    plus the follow-up roundup that reach them instead.
+
+    Either way they're recorded as nudged, along with which group they were seen
+    in, so the follow-up sweep chases them where they actually are rather than in
+    every monitored group.
+    """
     button = InlineKeyboardButton(
-        msg.GROUP_NUDGE_BUTTON, url=_register_url(context.bot.username)
+        msg.REGISTER_BUTTON, url=_register_url(context.bot.username)
     )
+    delivered = True
     try:
         await context.bot.send_message(
-            chat_id=chat_id,
-            text=msg.GROUP_NUDGE.format(mention=_mention(user.id, user.first_name)),
+            chat_id=user.id,
+            text=msg.DM_NUDGE,
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([[button]]),
             disable_web_page_preview=True,
         )
     except Exception:
-        logger.exception(
-            "Failed to post gate nudge for user %d in chat %d", user.id, chat_id
-        )
-        return False
+        # Overwhelmingly "the bot can't initiate a chat with this user". Logged at
+        # debug because at community scale it is the common case, not a fault.
+        logger.debug("Could not DM the gate nudge to user %d", user.id)
+        delivered = False
 
-    # Record which group, so the follow-up sweep chases them where they actually
-    # are rather than in every monitored group.
     await db.mark_nudged(user.id, user.username, user.first_name, chat_id)
-    logger.info("Gate-nudged user %d (@%s) in chat %d", user.id, user.username, chat_id)
-    return True
+    logger.info(
+        "Gate-nudged user %d (@%s) seen in chat %d (DM delivered: %s)",
+        user.id, user.username, chat_id, delivered,
+    )
+    return delivered
 
 
 async def _process_user(
@@ -258,6 +307,9 @@ async def _process_user(
 
     Anyone already classified (member / nudged / onboarding / registered) is
     skipped — this enforces "nudge once" and caches the membership lookup.
+
+    Nothing is posted in the group: the nudge is a DM, and if it can't be
+    delivered they're still recorded so the follow-up roundup names them.
     """
     if user is None or user.is_bot:
         return
@@ -271,7 +323,7 @@ async def _process_user(
         await db.mark_member(user.id, user.username, user.first_name)
         return
 
-    await _post_nudge(context, chat_id, user)
+    await _dm_nudge(context, chat_id, user)
 
 
 def _just_joined(result) -> bool:
@@ -469,7 +521,7 @@ async def followup_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             len(stale), chat_id,
         )
         button = InlineKeyboardButton(
-            msg.GROUP_NUDGE_BUTTON, url=_register_url(context.bot.username)
+            msg.REGISTER_BUTTON, url=_register_url(context.bot.username)
         )
 
         # Batch the mentions. Telegram caps a group at roughly 20 messages a
@@ -546,9 +598,10 @@ async def on_already_tap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     the person the gate exists to find.
 
     Confirmed  -> recorded as a member, so they're never asked again.
-    Contradicted -> told privately, and pointed at the Join button. Nothing is
-                    posted publicly; being publicly corrected would be worse than
-                    the problem.
+    Contradicted -> told privately (popup, plus a DM if we can reach them) and
+                    recorded as chased. Nothing is posted publicly; being
+                    corrected in front of the group would be worse than the
+                    problem, and the roundup catches them if the DM can't land.
     """
     query = update.callback_query
     user = query.from_user
@@ -563,34 +616,33 @@ async def on_already_tap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     # They believe they're in and they're not — most often a second Telegram
-    # account, or they left at some point. Correct it publicly so the claim can't
-    # be used to quietly opt out, and record the tag so the follow-up sweep counts
-    # them as already chased.
+    # account, or they left at some point. Record the tap so the claim can't be
+    # used to quietly opt out: the follow-up roundup will keep naming them until
+    # they actually register.
     logger.info(
         "User %d (@%s) claimed alumni membership but isn't in the group",
         user.id, user.username,
     )
     chat = update.effective_chat
     if chat is not None and is_monitored(chat.id):
-        button = InlineKeyboardButton(
-            msg.GROUP_NUDGE_BUTTON, url=_register_url(context.bot.username)
+        await db.mark_nudged(user.id, user.username, user.first_name, chat.id)
+
+    # The popup below disappears as soon as they dismiss it, so follow it with a
+    # DM that keeps the Register button around. Best-effort: it only works if
+    # they've started the bot.
+    button = InlineKeyboardButton(
+        msg.REGISTER_BUTTON, url=_register_url(context.bot.username)
+    )
+    try:
+        await context.bot.send_message(
+            chat_id=user.id,
+            text=msg.DM_NOT_ACTUALLY_MEMBER,
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([[button]]),
+            disable_web_page_preview=True,
         )
-        try:
-            await context.bot.send_message(
-                chat_id=chat.id,
-                text=msg.GROUP_NOT_ACTUALLY_MEMBER.format(
-                    mention=_mention(user.id, user.first_name)
-                ),
-                parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup([[button]]),
-                disable_web_page_preview=True,
-            )
-        except Exception:
-            logger.exception(
-                "Failed to post false-claim correction for user %d", user.id
-            )
-        else:
-            await db.mark_nudged(user.id, user.username, user.first_name, chat.id)
+    except Exception:
+        logger.debug("Could not DM the false-claim correction to user %d", user.id)
 
     await query.answer(msg.CB_NOT_ACTUALLY_MEMBER, show_alert=True)
 
@@ -936,13 +988,11 @@ async def watch_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if user is None or not _is_admin(user.id):
         return
     if chat is None or chat.type not in ("group", "supergroup"):
-        await update.effective_message.reply_text(
-            msg.WATCH_NOT_A_GROUP, parse_mode="HTML"
-        )
+        await _reply_privately(update, context, msg.WATCH_NOT_A_GROUP, parse_mode="HTML")
         return
     if chat.id == settings.GROUP_ID:
-        await update.effective_message.reply_text(
-            msg.WATCH_IS_ALUMNI_GROUP, parse_mode="HTML"
+        await _reply_privately(
+            update, context, msg.WATCH_IS_ALUMNI_GROUP, parse_mode="HTML"
         )
         return
 
@@ -951,8 +1001,11 @@ async def watch_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await refresh_monitored()
 
     template = msg.WATCH_ADDED if added else msg.WATCH_ALREADY
-    await update.effective_message.reply_text(
-        template.format(title=html.escape(title), chat_id=chat.id), parse_mode="HTML"
+    await _reply_privately(
+        update,
+        context,
+        template.format(title=html.escape(title), chat_id=chat.id),
+        parse_mode="HTML",
     )
     logger.info("Now watching chat %d (%s)", chat.id, title)
 
@@ -964,15 +1017,15 @@ async def unwatch_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if user is None or not _is_admin(user.id):
         return
     if chat is None or chat.type not in ("group", "supergroup"):
-        await update.effective_message.reply_text(
-            msg.WATCH_NOT_A_GROUP, parse_mode="HTML"
-        )
+        await _reply_privately(update, context, msg.WATCH_NOT_A_GROUP, parse_mode="HTML")
         return
 
     removed = await db.remove_monitored_chat(chat.id)
     await refresh_monitored()
     template = msg.UNWATCH_DONE if removed else msg.UNWATCH_NOT_WATCHED
-    await update.effective_message.reply_text(
+    await _reply_privately(
+        update,
+        context,
         template.format(title=html.escape(chat.title or str(chat.id))),
         parse_mode="HTML",
     )
@@ -1017,9 +1070,7 @@ async def announce_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
 
     if not settings.active():
-        await update.effective_message.reply_text(
-            msg.ANNOUNCE_DORMANT, parse_mode="HTML"
-        )
+        await _reply_privately(update, context, msg.ANNOUNCE_DORMANT, parse_mode="HTML")
         return
 
     targets = (
@@ -1028,8 +1079,8 @@ async def announce_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         else sorted(monitored_ids())
     )
     if not targets:
-        await update.effective_message.reply_text(
-            msg.ANNOUNCE_NO_TARGETS, parse_mode="HTML"
+        await _reply_privately(
+            update, context, msg.ANNOUNCE_NO_TARGETS, parse_mode="HTML"
         )
         return
 
@@ -1038,11 +1089,12 @@ async def announce_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         if await post_announcement(context, chat_id):
             posted += 1
 
-    # In a group the announcement itself is the feedback.
-    if chat.type == "private":
-        await update.message.reply_text(
-            msg.ANNOUNCE_DONE.format(ok=posted, total=len(targets)), parse_mode="HTML"
-        )
+    await _reply_privately(
+        update,
+        context,
+        msg.ANNOUNCE_DONE.format(ok=posted, total=len(targets)),
+        parse_mode="HTML",
+    )
 
 
 # ── Wiring ──────────────────────────────────────────────────────────────────────

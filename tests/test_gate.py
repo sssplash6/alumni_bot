@@ -127,15 +127,34 @@ def test_non_member_gets_nudged_once(live):
 
     asyncio.run(gh._process_user(ctx, MONITORED, user))
 
+    # The nudge is a DM to the person, never a post in the group they were
+    # seen in — being tagged publicly for not having joined reads as a
+    # call-out.
     kwargs = ctx.bot.send_message.await_args.kwargs
-    assert kwargs["chat_id"] == MONITORED
-    assert "tg://user?id=555" in kwargs["text"]
+    assert kwargs["chat_id"] == 555
     assert asyncio.run(gdb.get_user(555))["status"] == "nudged"
 
     # Second sighting: already classified -> no second nudge.
     ctx.bot.send_message.reset_mock()
     asyncio.run(gh._process_user(ctx, MONITORED, user))
     ctx.bot.send_message.assert_not_awaited()
+
+
+def test_an_undeliverable_nudge_still_records_them(live):
+    """Telegram won't let a bot open a chat with someone who never messaged it.
+
+    That is the common case in a community group, so the record must be written
+    regardless — it is what puts them in the follow-up roundup, which is the only
+    way the gate can reach them at all.
+    """
+    ctx = _ctx(member_status=None)
+    ctx.bot.send_message = AsyncMock(side_effect=Forbidden("bot can't initiate"))
+
+    asyncio.run(gh._process_user(ctx, MONITORED, _user()))
+
+    row = asyncio.run(gdb.get_user(555))
+    assert row["status"] == "nudged"
+    assert row["last_seen_chat_id"] == MONITORED
 
 
 def test_existing_member_not_nudged(live):
@@ -687,17 +706,17 @@ def test_existing_alumni_member_never_touches_airtable(live):
     ctx.bot.send_message.assert_not_awaited()
 
 
-# ── False membership claims are corrected publicly ──────────────────────────────
+# ── False membership claims are corrected privately ─────────────────────────────
 
-def test_false_already_claim_is_corrected_in_the_group(live):
+def test_false_already_claim_is_corrected_privately(live):
     ctx = _ctx(member_status=None)   # not actually in the alumni group
     update, query = _group_tap()
 
     asyncio.run(gh.on_already_tap(update, ctx))
 
+    # Corrected in a DM, not in front of the group.
     kwargs = ctx.bot.send_message.await_args.kwargs
-    assert kwargs["chat_id"] == MONITORED
-    assert "tg://user?id=555" in kwargs["text"]
+    assert kwargs["chat_id"] == 555
     assert "isn't in the alumni group" in kwargs["text"].lower()
     # Recorded as chased, in the right group, so the sweep doesn't double up.
     row = asyncio.run(gdb.get_user(555))
@@ -706,7 +725,20 @@ def test_false_already_claim_is_corrected_in_the_group(live):
     query.answer.assert_awaited_once()
 
 
-def test_true_already_claim_posts_nothing(live):
+def test_false_claim_is_recorded_even_if_the_dm_bounces(live):
+    """The popup and the DM are both best-effort; the record is not. Without it
+    the claim would be a way to quietly opt out of ever being chased again."""
+    ctx = _ctx(member_status=None)
+    ctx.bot.send_message = AsyncMock(side_effect=Forbidden("bot can't initiate"))
+    update, query = _group_tap()
+
+    asyncio.run(gh.on_already_tap(update, ctx))
+
+    assert asyncio.run(gdb.get_user(555))["status"] == "nudged"
+    assert "can't find" in query.answer.await_args.args[0].lower()
+
+
+def test_true_already_claim_says_nothing_at_all(live):
     ctx = _ctx(member_status="member")
     update, _ = _group_tap()
 
@@ -835,17 +867,45 @@ def _group_cmd(chat_id=-100555, title="Cohort 2026", chat_type="supergroup", adm
     ), reply
 
 
+def _admin_answer(ctx, reply):
+    """What an admin command answered with.
+
+    Commands typed in a group answer in the admin's DM, so the group is left with
+    only the announcement and the roundup; in a private chat they reply in place.
+    """
+    if ctx.bot.send_message.await_args is not None:
+        return ctx.bot.send_message.await_args.kwargs["text"]
+    return reply.await_args.args[0]
+
+
 def test_watch_adds_a_group_without_a_restart(live):
+    ctx = _ctx()
     update, reply = _group_cmd()
 
-    asyncio.run(gh.watch_command(update, _ctx()))
+    asyncio.run(gh.watch_command(update, ctx))
 
     assert -100555 in gh.monitored_ids()
     assert gh.is_monitored(-100555)
-    assert "-100555" in reply.await_args.args[0]
+    # Confirmed in the admin's DM; nothing lands in the group itself.
+    reply.assert_not_awaited()
+    assert ctx.bot.send_message.await_args.kwargs["chat_id"] == ADMIN
+    assert "-100555" in _admin_answer(ctx, reply)
     # And it survives a cache reload, i.e. it was persisted.
     asyncio.run(gh.refresh_monitored())
     assert gh.is_monitored(-100555)
+
+
+def test_watch_falls_back_to_the_group_if_the_admin_dm_bounces(live):
+    """Silence would read as the command being broken, so a bounced DM is the one
+    case where a confirmation is allowed to land in the group."""
+    ctx = _ctx()
+    ctx.bot.send_message = AsyncMock(side_effect=Forbidden("bot can't initiate"))
+    update, reply = _group_cmd()
+
+    asyncio.run(gh.watch_command(update, ctx))
+
+    assert gh.is_monitored(-100555)
+    assert "-100555" in reply.await_args.args[0]
 
 
 def test_watched_group_is_immediately_active(live):
@@ -863,25 +923,27 @@ def test_watched_group_is_immediately_active(live):
     asyncio.run(gh.on_group_message(msg_update, ctx))
 
     assert asyncio.run(gdb.get_user(777))["status"] == "nudged"
-    assert ctx.bot.send_message.await_args.kwargs["chat_id"] == -100555
+    assert ctx.bot.send_message.await_args.kwargs["chat_id"] == 777
 
 
 def test_watch_twice_is_idempotent(live):
+    ctx = _ctx()
     update, reply = _group_cmd()
-    asyncio.run(gh.watch_command(update, _ctx()))
-    asyncio.run(gh.watch_command(update, _ctx()))
+    asyncio.run(gh.watch_command(update, ctx))
+    asyncio.run(gh.watch_command(update, ctx))
 
-    assert "already watching" in reply.await_args.args[0].lower()
+    assert "already watching" in _admin_answer(ctx, reply).lower()
     assert len(asyncio.run(gdb.monitored_chats())) == 2  # the seed + this one
 
 
 def test_watch_refuses_the_alumni_group_itself(live):
+    ctx = _ctx()
     update, reply = _group_cmd(chat_id=ALUMNI_GROUP, title="Alumni")
 
-    asyncio.run(gh.watch_command(update, _ctx()))
+    asyncio.run(gh.watch_command(update, ctx))
 
     assert not gh.is_monitored(ALUMNI_GROUP)
-    assert "destination" in reply.await_args.args[0].lower()
+    assert "destination" in _admin_answer(ctx, reply).lower()
 
 
 def test_watch_refuses_a_private_chat(live):
@@ -917,11 +979,12 @@ def test_unwatch_stops_detection(live):
 
 
 def test_unwatch_a_group_never_watched(live):
+    ctx = _ctx()
     update, reply = _group_cmd(chat_id=-100999123)
 
-    asyncio.run(gh.unwatch_command(update, _ctx()))
+    asyncio.run(gh.unwatch_command(update, ctx))
 
-    assert "wasn't watching" in reply.await_args.args[0].lower()
+    assert "wasn't watching" in _admin_answer(ctx, reply).lower()
 
 
 def test_env_seed_is_a_bootstrap_only(live):

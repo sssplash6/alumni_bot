@@ -33,18 +33,22 @@ ELIGIBILITY_UNAVAILABLE = (
     f"minute — if it keeps happening, message {ADMIN_CONTACT}."
 )
 
-# ── Group nudge (posted publicly, tags the person) ──────────────────────────────
-# {mention} is an HTML <a href="tg://user?id=..."> mention that notifies them.
-GROUP_NUDGE = (
-    "👋 {mention} — looks like you're not in the official Alumni group yet!\n\n"
+# ── The nudge, sent as a DM ─────────────────────────────────────────────────────
+# Seen in a community group but not in the Alumni group. Sent privately, never in
+# the group: being publicly tagged for not having joined something reads as being
+# called out. It only lands if they've started the bot before — everyone else is
+# reached by the pinned announcement and the follow-up roundup.
+DM_NUDGE = (
+    "👋 Hey! Looks like you're not in the official <b>Alumni group</b> yet.\n\n"
     "Tap below to register. You'll get a personal one-time link and be let in "
     "automatically. 🎓"
 )
-GROUP_NUDGE_BUTTON = "Register for the Alumni group ▸"
+REGISTER_BUTTON = "Register for the Alumni group ▸"
 
 # ── Group announcement (pinned, re-posted every few days) ────────────────────────
-# The cold-start path: everyone already in the group taps one button. Members are
-# answered privately and never named publicly; non-members get tagged.
+# The cold-start path: everyone already in the group taps one button. Every reply
+# to a tap is private — this and the follow-up roundup are the only two things the
+# gate ever posts in a group.
 GROUP_ANNOUNCE = (
     "🎓 <b>The official Alumni group</b>\n\n"
     "Every Freshman Academy graduate belongs in it — that's where introductions, "
@@ -70,10 +74,11 @@ CB_NOT_ACTUALLY_MEMBER = (
     "Tap “Join the Alumni group” above and I'll sort you out."
 )
 
-# Posted in the group when someone claims membership they don't have.
-GROUP_NOT_ACTUALLY_MEMBER = (
-    "🤔 {mention} — I checked, and this account <b>isn't in the Alumni group</b> "
-    "yet!\n\n"
+# DMed when someone claims membership they don't have. The popup above says the
+# same thing but vanishes when they tap it away; this stays in their chat with the
+# bot, with the button attached. The group is never told about the claim.
+DM_NOT_ACTUALLY_MEMBER = (
+    "🤔 I checked, and this account <b>isn't in the Alumni group</b> yet!\n\n"
     "If you're in it on another Telegram account, no problem — but this one needs "
     "registering. Tap below. 🎓"
 )
