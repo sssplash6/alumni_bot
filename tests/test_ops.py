@@ -1,6 +1,7 @@
 # tests/test_ops.py
-"""Operational safety nets: database snapshots and admin error alerts."""
+"""Operational safety nets: database snapshots and error logging."""
 import asyncio
+import logging
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
@@ -69,14 +70,10 @@ def test_backup_without_a_database_returns_none(tmp_path):
         assert asyncio.run(db.backup()) is None
 
 
-# ── Error alerts ────────────────────────────────────────────────────────────────
+# ── Errors ──────────────────────────────────────────────────────────────────────
 
-def _reset_throttle():
-    bot._last_error_alert = None
-
-
-def test_error_handler_alerts_admins():
-    _reset_throttle()
+def test_errors_are_logged_and_never_messaged(caplog):
+    """Faults go to the log, not to anyone's Telegram."""
     ctx = _ctx()
     ctx.error = ValueError("something broke")
     update = SimpleNamespace(
@@ -84,50 +81,24 @@ def test_error_handler_alerts_admins():
         effective_user=SimpleNamespace(id=555),
     )
 
-    asyncio.run(bot.on_error(update, ctx))
+    with caplog.at_level(logging.ERROR):
+        asyncio.run(bot.on_error(update, ctx))
 
-    ctx.bot.send_message.assert_awaited()
-    text = ctx.bot.send_message.await_args.kwargs["text"]
-    assert "something broke" in text
-    assert "-100111" in text
-
-
-def test_error_alerts_are_throttled():
-    _reset_throttle()
-    ctx = _ctx()
-    ctx.error = ValueError("boom")
-    update = SimpleNamespace(effective_chat=None, effective_user=None)
-
-    async def run():
-        for _ in range(3):
-            await bot.on_error(update, ctx)
-
-    asyncio.run(run())
-
-    # One alert per admin, not three rounds of them.
-    assert ctx.bot.send_message.await_count == len(bot.ADMIN_IDS)
+    ctx.bot.send_message.assert_not_awaited()
+    assert "something broke" in caplog.text
+    assert "-100111" in caplog.text
 
 
-def test_error_handler_survives_undeliverable_admin_dm():
-    """An admin who never started the bot can't be DMed; that must not raise."""
-    _reset_throttle()
-    ctx = _ctx()
-    ctx.error = ValueError("boom")
-    ctx.bot.send_message = AsyncMock(side_effect=Exception("chat not found"))
-    update = SimpleNamespace(effective_chat=None, effective_user=None)
-
-    asyncio.run(bot.on_error(update, ctx))  # must not raise
-
-
-def test_error_handler_without_exception_attached():
-    _reset_throttle()
+def test_error_handler_survives_an_update_with_nothing_attached():
+    """A handler that raises is swallowed by the framework, so this one mustn't:
+    losing the error handler is what leaves you blind."""
     ctx = _ctx()
     ctx.error = None
-    update = SimpleNamespace(effective_chat=None, effective_user=None)
 
-    asyncio.run(bot.on_error(update, ctx))
-
-    ctx.bot.send_message.assert_awaited()
+    asyncio.run(bot.on_error(object(), ctx))  # must not raise
+    asyncio.run(bot.on_error(
+        SimpleNamespace(effective_chat=None, effective_user=None), ctx
+    ))
 
 
 # ── Setup helpers ───────────────────────────────────────────────────────────────

@@ -316,13 +316,7 @@ ELYSIUM_LIST_ENTRY = "{idx}. {full_name} — {cohort}{username_part}"
 # ── Alumni Gate ─────────────────────────────────────────────────────────────────
 
 # ── Operations ──────────────────────────────────────────────────────────────────
-# Sent to admins when a handler raises. Throttled — see bot.on_error.
-ADMIN_ERROR = (
-    "🔴 <b>Bot hit an error</b>{where}\n\n"
-    "<pre>{detail}</pre>\n"
-    "Further alerts are muted for {cooldown} min so a repeating fault can't "
-    "flood you. Check the logs for the full picture."
-)
+# Handler exceptions are logged, not messaged — see bot.on_error.
 
 BACKUP_DONE = "💾 Database snapshot saved:\n<code>{path}</code>"
 
