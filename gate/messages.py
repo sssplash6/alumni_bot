@@ -220,10 +220,7 @@ INTRO_THANKS = "Perfect — thanks! 🎉 Enjoy the network."
 INTRO_NOT_YET = (
     "No problem! 🙌\n\n"
     "Make sure to post it soon, <b>so people know who you are and can reach out "
-    "to you</b> — introductions and opportunities in this network start with "
-    "someone recognising your name.\n\n"
-    "It's the same intro you wrote for me: scroll up in this chat, copy it, and "
-    "send it into the group. That's the last thing, and then you're properly in."
+    "to you</b>."
 )
 
 LINK_FAILED = (

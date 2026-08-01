@@ -933,14 +933,14 @@ def test_answering_yes_closes_it_out(live):
     query.edit_message_reply_markup.assert_awaited_once()
 
 
-def test_answering_not_yet_says_how_to_do_it(live):
+def test_answering_not_yet_nudges_without_recording_it(live):
     _joined(777, hours_ago=4)
     asyncio.run(gh.intro_check_job(_ctx()))
 
     _, reply = _answer_intro(777, yes=False)
 
     assert asyncio.run(gdb.get_user(777))["intro_posted_at"] is None
-    assert "copy it" in reply.await_args.args[0].lower()
+    assert "make sure to post it" in reply.await_args.args[0].lower()
 
 
 def test_someone_who_only_just_joined_is_left_alone(live):
