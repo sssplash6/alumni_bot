@@ -99,7 +99,6 @@ GROUP_FOLLOWUP = (
 # the form" check, are buttons below it.
 WELCOME_ONBOARDING = (
     "Hey,\n\n"
-    "<b>Hazratbek</b> here — Treasurer of the Freshman Council.\n\n"
     "I'm thrilled to welcome you to the <b>Freshman Alumni Network</b>! You'll join a "
     "group of talented students studying at Ivy League universities, Stanford, "
     "UC Berkeley, NYUAD and more. But before you join, I need to onboard you. "
