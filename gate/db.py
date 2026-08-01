@@ -61,6 +61,16 @@ async def init_schema() -> None:
             )
         except aiosqlite.OperationalError:
             pass
+        # Set when someone redeems an invite token, which excuses them from the
+        # "must be in an approved group" check. Persistent rather than a one-shot,
+        # because eligibility is re-asked every time they re-enter onboarding —
+        # abandoning halfway and coming back must not need a second token.
+        try:
+            await db.execute(
+                "ALTER TABLE gate_users ADD COLUMN exempt INTEGER NOT NULL DEFAULT 0"
+            )
+        except aiosqlite.OperationalError:
+            pass
         await db.execute("""
             CREATE TABLE IF NOT EXISTS gate_announcements (
                 chat_id    INTEGER PRIMARY KEY,
@@ -97,6 +107,27 @@ async def init_schema() -> None:
             await db.execute("UPDATE gate_monitored_chats SET approved = 1")
         except aiosqlite.OperationalError:
             pass
+        # One-off invite codes, for admitting someone who isn't in any approved
+        # group — a guest speaker, a graduate who left every chat, an early
+        # alumnus who predates them.
+        #
+        # Only a HASH is stored. The plaintext is shown to the admin once, at
+        # creation, and never again: a token in the database is a working key to
+        # the alumni group, and this file gets backed up on a schedule. Losing one
+        # means issuing another, which is the correct cost.
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS gate_invite_tokens (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                token_hash  TEXT NOT NULL UNIQUE,
+                note        TEXT,
+                created_by  INTEGER NOT NULL,
+                created_at  TEXT NOT NULL,
+                expires_at  TEXT,
+                redeemed_by INTEGER,
+                redeemed_at TEXT,
+                revoked_at  TEXT
+            )
+        """)
         await db.commit()
 
 
@@ -320,6 +351,108 @@ async def monitored_chats() -> list[dict]:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT * FROM gate_monitored_chats ORDER BY added_at"
+        )
+        return [dict(row) for row in await cur.fetchall()]
+
+
+# ── Invite tokens ───────────────────────────────────────────────────────────────
+
+async def mark_exempt(user_id: int) -> None:
+    """Excuse this person from the approved-group check, permanently.
+
+    Written straight rather than through _upsert: redeeming a token must not
+    disturb whatever status they already have, and the commonest case is somebody
+    with no row at all.
+    """
+    now = _now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO gate_users (user_id, status, exempt, updated_at)
+            VALUES (?, 'awaiting_form', 1, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                exempt = 1, updated_at = excluded.updated_at
+            """,
+            (user_id, now),
+        )
+        await db.commit()
+
+
+async def is_exempt(user_id: int) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "SELECT exempt FROM gate_users WHERE user_id = ?", (user_id,)
+        )
+        row = await cur.fetchone()
+        return bool(row and row[0])
+
+
+async def create_invite_token(
+    token_hash: str, note: str | None, created_by: int, expires_at: str | None
+) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """
+            INSERT INTO gate_invite_tokens
+                (token_hash, note, created_by, created_at, expires_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (token_hash, note, created_by, _now(), expires_at),
+        )
+        await db.commit()
+        return cur.lastrowid
+
+
+async def find_invite_token(token_hash: str) -> dict | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT * FROM gate_invite_tokens WHERE token_hash = ?", (token_hash,)
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+
+async def redeem_invite_token(token_id: int, user_id: int) -> bool:
+    """Spend a token. False if someone else got there first, or it was revoked.
+
+    The guard lives in the WHERE clause rather than in a read-then-write, so two
+    people racing the same code can't both be admitted by it.
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """
+            UPDATE gate_invite_tokens
+               SET redeemed_by = ?, redeemed_at = ?
+             WHERE id = ? AND redeemed_by IS NULL AND revoked_at IS NULL
+            """,
+            (user_id, _now(), token_id),
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def revoke_invite_token(token_id: int) -> bool:
+    """Kill an unredeemed token. False if it doesn't exist or was already spent."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """
+            UPDATE gate_invite_tokens
+               SET revoked_at = ?
+             WHERE id = ? AND redeemed_by IS NULL AND revoked_at IS NULL
+            """,
+            (_now(), token_id),
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def invite_tokens() -> list[dict]:
+    """Every token ever issued, newest first."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT * FROM gate_invite_tokens ORDER BY id DESC"
         )
         return [dict(row) for row in await cur.fetchall()]
 

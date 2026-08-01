@@ -68,6 +68,14 @@ REQUIRE_WATCHED_GROUP: bool = _flag(
 # intro being asked for — without a floor a single "ok" would open the gate.
 INTRO_MIN_WORDS: int = int(os.environ.get("GATE_INTRO_MIN_WORDS", "50") or "50")
 
+# How long an unredeemed invite token stays usable, in days. 0 = forever.
+#
+# Defaults to a month because these are handed out for a specific person joining
+# now, and a code that still works a year after it was pasted into a chat is a
+# standing key to the alumni group that nobody remembers issuing. /gate_revoke
+# handles the ones you do remember; this handles the rest.
+TOKEN_TTL_DAYS: int = int(os.environ.get("GATE_TOKEN_TTL_DAYS", "30") or "30")
+
 # How often (days) to re-post the pinned "check if I'm in the alumni group"
 # announcement — the only way to reach people who were already in a monitored
 # group before the bot arrived and who never post. 0 disables the re-post.

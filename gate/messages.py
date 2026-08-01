@@ -22,8 +22,10 @@ NOT_IN_ANY_GROUP = (
     "The Alumni group is for people who are already part of one of them, so I "
     "can't start you off just yet.\n\n"
     "If you <b>are</b> in one, you may be messaging me from a different Telegram "
-    "account than the one you use there — try again from that account. Otherwise, "
-    f"message {ADMIN_CONTACT} and they'll sort it out. 💬"
+    "account than the one you use there — try again from that account.\n\n"
+    "🎟 <b>Been given an invite code?</b> Send it to me here (it looks like "
+    "<code>FA-XXXXX-XXXXX</code>) and I'll take it from there.\n\n"
+    f"Otherwise, message {ADMIN_CONTACT} and they'll sort it out. 💬"
 )
 
 # Every eligibility lookup failed, so we genuinely don't know. Never refuse on
@@ -206,6 +208,99 @@ LINK_FAILED = (
     f"⚠️ Something went wrong creating your invite link. Please message {ADMIN_CONTACT} "
     "and we'll sort it out."
 )
+
+# ── Invite tokens ───────────────────────────────────────────────────────────────
+# For admitting someone who is in none of the approved groups — a guest speaker,
+# a graduate who left every chat, an alumnus who predates them.
+
+TOKEN_ACCEPTED = (
+    "🎟 <b>Code accepted!</b>\n\n"
+    "You don't need to be in one of the community groups — let's get you onboarded."
+)
+
+# Well-formed, but no such code. Distinct from TOKEN_MALFORMED because "check
+# you typed it right" is unhelpful advice to someone who typed it right.
+TOKEN_INVALID = (
+    "🤔 I don't recognise that invite code.\n\n"
+    "It might have been cancelled, or belong to a different bot. Message "
+    f"{ADMIN_CONTACT} and they'll issue you a new one."
+)
+
+# Recognisably an attempt — starts with FA- — but doesn't parse. Almost always a
+# typo, so it names the two characters people actually get wrong.
+TOKEN_MALFORMED = (
+    "🤔 That's <i>nearly</i> an invite code, but not quite.\n\n"
+    "They look like <code>FA-XXXXX-XXXXX</code> — five characters, a dash, five "
+    "more.\n\n"
+    "If you're retyping it, note that codes never contain <b>I</b>, <b>L</b>, "
+    "<b>O</b>, <b>0</b> or <b>1</b> — those are left out because they're so easy "
+    "to mix up. Copying and pasting is safest.\n\n"
+    f"Still stuck? Message {ADMIN_CONTACT}."
+)
+
+# Used and revoked share a message on purpose: telling someone "that code was "
+# revoked" invites an argument, and "already used" is true of a revoked code from
+# where they're standing — either way the answer is to ask for another.
+TOKEN_USED = (
+    "🎟 That code has already been used.\n\n"
+    "Each one works once. If it should have been yours, message "
+    f"{ADMIN_CONTACT} and they'll issue a new one."
+)
+
+TOKEN_EXPIRED = (
+    "🎟 That code has expired.\n\n"
+    f"Message {ADMIN_CONTACT} and they'll send you a fresh one — it only takes a "
+    "moment."
+)
+
+# Shown to the admin once, at creation. The plaintext exists nowhere else.
+TOKEN_CREATED = (
+    "🎟 <b>Invite code #{token_id}</b>\n\n"
+    "<code>{token}</code>\n\n"
+    "For: {note}\n"
+    "{ttl}\n\n"
+    "Send it to the person and have them paste it to me in a private chat. It "
+    "works <b>once</b>, and lets them onboard without being in any community "
+    "group.\n\n"
+    "⚠️ I don't store the code itself, only a fingerprint — so this message is the "
+    "only copy. Lose it and issue another with <code>/gate_token</code>; cancel "
+    "this one with <code>/gate_revoke {token_id}</code>."
+)
+TOKEN_TTL_DAYS = "Expires in <b>{days} days</b>."
+TOKEN_TTL_NEVER = "Doesn't expire."
+
+TOKEN_REDEEMED_ALERT = (
+    "🎟 Invite code <b>#{token_id}</b> ({note}) was just redeemed by {who} "
+    "({username}).\n\nThey're now going through onboarding."
+)
+
+TOKENS_EMPTY = (
+    "No invite codes issued yet. Create one with <code>/gate_token [who it's "
+    "for]</code>."
+)
+TOKENS_HEADER = "🎟 <b>Invite codes ({count})</b>"
+TOKENS_ENTRY = "<b>#{token_id}</b> {state} — {note}"
+TOKENS_FOOTER = (
+    "<i>Codes aren't stored, only fingerprints, so they can't be shown again. "
+    "Cancel an unused one with /gate_revoke &lt;id&gt;.</i>"
+)
+TOKEN_STATES = {
+    "ok": "🟢 unused",
+    "used": "✅ redeemed",
+    "revoked": "🚫 revoked",
+    "expired": "⌛ expired",
+}
+
+REVOKE_USAGE = (
+    "Usage: <code>/gate_revoke &lt;id&gt;</code> — the number from "
+    "<code>/gate_tokens</code>, e.g. <code>/gate_revoke 3</code>."
+)
+REVOKE_DONE = "🚫 Invite code <b>#{token_id}</b> is cancelled — it won't work now."
+REVOKE_NOTHING = (
+    "Nothing to cancel for <b>#{token_id}</b> — it's already been used, already "
+    "cancelled, or never existed. Either way it can't be redeemed."
+)
+
 
 # ── Admin ───────────────────────────────────────────────────────────────────────
 STATS = (

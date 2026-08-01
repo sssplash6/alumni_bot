@@ -194,6 +194,51 @@ fastest tapper is refused by the group they're standing in.
 A DM `/gate_announce` approves nothing: approving means vouching for a specific
 group, and a DM carries none.
 
+### Invite codes — the deliberate way round the check
+
+Not everyone who belongs is in a community group: a guest speaker, a graduate who
+left every chat years ago, someone from before the groups existed. Without a way
+in for them, the only options are turning `GATE_REQUIRE_WATCHED_GROUP` off (which
+opens the door to everyone) or adding them to a group they have no reason to be
+in — so `/gate_token` mints a one-off code instead.
+
+    admin: /gate_token Dilnoza — guest speaker, Nov panel
+    bot:   🎟 Invite code #4 …  FA-K7M2Q-XR94T
+
+The person pastes it into a DM with the bot and lands in onboarding with the
+approved-group check skipped. Everything after that is unchanged: they still fill
+in the form, still send an intro, still get a personal single-use link.
+
+Properties worth knowing, in rough order of how much they matter:
+
+- **Only a hash is stored.** The plaintext appears once, in the reply to
+  `/gate_token`. `gate_invite_tokens` holds `sha256(code)`, so a leaked database
+  backup — and these are taken on a schedule — yields no usable codes. The cost is
+  that a lost code can't be re-read; issue another and revoke the first.
+- **Single use, enforced in SQL.** `redeem_invite_token` guards on
+  `redeemed_by IS NULL` inside the `UPDATE`, not in a read-then-write, so two
+  people racing the same code can't both get in.
+- **The exemption outlives the code.** Redeeming sets `gate_users.exempt`, because
+  eligibility is re-asked *every* time someone enters onboarding — a one-shot
+  bypass would strand anyone who abandoned halfway and came back, and they'd need
+  a second code to finish something they already paid for with the first.
+- **They expire.** `GATE_TOKEN_TTL_DAYS`, default 30, 0 to disable. `/gate_revoke`
+  handles the codes you remember issuing; the TTL handles the rest.
+- **Redemptions are announced to every admin**, so a code being used is visible
+  without anyone running a report.
+- **Near-misses get answered.** Anything starting `FA-` and under 24 characters is
+  treated as an attempt and told what's wrong, rather than ignored — a dropped
+  character otherwise looks like a broken bot. The length bound is what stops a
+  fifty-word intro that opens with `FA-` being read as a malformed code; the
+  alphabet omits `I`, `L`, `O`, `0` and `1` so there's less to mistype.
+
+`/gate_token`, `/gate_tokens` and `/gate_revoke` are **DM-only**, with no group
+variant: the reply to the first is a working key to the alumni group.
+
+Note that anyone in `ADMIN_IDS` can mint one. If that list has been widened to
+include group leaders, they can admit individuals as well as approve groups —
+which is the smaller of the two powers, but worth knowing you granted it.
+
 Being *detected* is deliberately not required — someone can legitimately open the
 bot before a join, post or tap has surfaced them.
 
@@ -256,6 +301,12 @@ full name captured from the Airtable submission is kept on the roster.
   already-approved group and approves nothing. See `_announce_targets`
 - `/gate_stats` — (admins) counts per status
 - `/gate_list` — (admins) the roster of everyone admitted through the gate
+- `/gate_token [note]` — (admins, **DM only**) mint a one-off invite code for
+  someone in none of the approved groups. Shown once; the note is what makes the
+  list auditable later
+- `/gate_tokens` — (admins, DM only) every code issued, with its state and note.
+  Values are never shown — only hashes are stored
+- `/gate_revoke <id>` — (admins, DM only) kill an unredeemed code by its id
 
 ## Configuration
 

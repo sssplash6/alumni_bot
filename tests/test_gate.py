@@ -1,6 +1,7 @@
 # tests/test_gate.py
 """Alumni Gate: detection, the pinned self-check announcement, and onboarding."""
 import asyncio
+import re
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -51,7 +52,8 @@ def _user(uid=555, username="alice", first="Alice", is_bot=False):
     return SimpleNamespace(id=uid, username=username, first_name=first, is_bot=is_bot)
 
 
-def _ctx(member_status=None, invite="https://t.me/+newlink", watched_status="member"):
+def _ctx(member_status=None, invite="https://t.me/+newlink", watched_status="member",
+         args=None):
     """A context whose bot answers get_chat_member / create_chat_invite_link.
 
     The two groups are answered separately, because they ask opposite questions:
@@ -80,7 +82,7 @@ def _ctx(member_status=None, invite="https://t.me/+newlink", watched_status="mem
     bot_obj.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1000))
     bot_obj.pin_chat_message = AsyncMock()
     bot_obj.delete_message = AsyncMock()
-    return SimpleNamespace(bot=bot_obj)
+    return SimpleNamespace(bot=bot_obj, args=args)
 
 
 def _group_tap(user=None, chat_id=MONITORED):
@@ -849,6 +851,197 @@ def test_true_already_claim_says_nothing_at_all(live):
     asyncio.run(gh.on_already_tap(update, ctx))
 
     ctx.bot.send_message.assert_not_awaited()
+
+
+# ── Invite tokens: admitting someone who's in none of the approved groups ───────
+
+def _expire_all_tokens():
+    """Backdate every token's expiry so the TTL branch can be tested."""
+    import aiosqlite
+    from datetime import datetime, timedelta, timezone
+
+    async def _go():
+        past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        async with aiosqlite.connect(gdb.DB_PATH) as db:
+            await db.execute(
+                "UPDATE gate_invite_tokens SET expires_at = ?", (past,)
+            )
+            await db.commit()
+
+    asyncio.run(_go())
+
+
+def _issue(note="Guest speaker"):
+    """Mint a token the way /gate_token does, returning it and the admin's reply."""
+    update, reply = _dm(None, user=_user(uid=ADMIN, username="root", first="Root"))
+    asyncio.run(gh.token_command(update, _ctx(args=note.split())))
+    shown = reply.await_args.args[0]
+    token = re.search(r"FA-[A-Z2-9]{5}-[A-Z2-9]{5}", shown).group(0)
+    return token, shown
+
+
+def _redeem(token, uid=777, ctx=None):
+    ctx = ctx or _ctx(member_status=None, watched_status=None)
+    update, reply = _dm(token, user=_user(uid=uid))
+    asyncio.run(gh.on_private_text(update, ctx))
+    return reply
+
+
+def test_a_token_admits_someone_in_no_approved_group(live):
+    token, _ = _issue()
+
+    # watched_status=None: in none of the approved groups, so the normal door
+    # is shut to them.
+    reply = _redeem(token)
+
+    assert asyncio.run(gdb.get_user(777))["status"] == "awaiting_form"
+    assert "code accepted" in reply.await_args_list[0].args[0].lower()
+
+
+def test_the_exemption_outlives_the_token(live):
+    """Eligibility is re-asked every time someone re-enters onboarding, so a
+    one-shot bypass would strand anyone who wandered off and came back."""
+    token, _ = _issue()
+    ctx = _ctx(member_status=None, watched_status=None)
+    _redeem(token, ctx=ctx)
+
+    # Later, with no code in hand.
+    again, reply = _dm(None, user=_user(uid=777))
+    asyncio.run(gh.start_onboarding(again, ctx))
+
+    assert "can't find you" not in reply.await_args.args[0].lower()
+    assert asyncio.run(gdb.get_user(777))["status"] == "awaiting_form"
+
+
+def test_a_token_works_once(live):
+    token, _ = _issue()
+    _redeem(token, uid=777)
+
+    reply = _redeem(token, uid=888)
+
+    assert "already been used" in reply.await_args.args[0].lower()
+    assert asyncio.run(gdb.get_user(888)) is None
+
+
+def test_a_revoked_token_is_dead(live):
+    token, shown = _issue()
+    token_id = int(re.search(r"#(\d+)", shown).group(1))
+    admin, admin_reply = _dm(None, user=_user(uid=ADMIN))
+
+    asyncio.run(gh.revoke_command(admin, _ctx(args=[str(token_id)])))
+
+    assert "cancelled" in admin_reply.await_args.args[0].lower()
+    reply = _redeem(token)
+    assert "already been used" in reply.await_args.args[0].lower()
+    assert asyncio.run(gdb.get_user(777)) is None
+
+
+def test_a_redeemed_token_cannot_be_revoked_after_the_fact(live):
+    """Revoke reports honestly rather than pretending it undid something."""
+    token, shown = _issue()
+    token_id = int(re.search(r"#(\d+)", shown).group(1))
+    _redeem(token)
+    admin, admin_reply = _dm(None, user=_user(uid=ADMIN))
+
+    asyncio.run(gh.revoke_command(admin, _ctx(args=[str(token_id)])))
+
+    assert "nothing to cancel" in admin_reply.await_args.args[0].lower()
+
+
+def test_an_expired_token_is_refused(live):
+    token, _ = _issue()
+    _expire_all_tokens()
+
+    reply = _redeem(token)
+
+    assert "expired" in reply.await_args.args[0].lower()
+    assert asyncio.run(gdb.get_user(777)) is None
+
+
+def test_a_made_up_code_admits_nobody(live):
+    """Well-formed but unknown — told it isn't recognised, not that it's a typo."""
+    reply = _redeem("FA-ZZZZZ-ZZZZZ")
+
+    assert "don't recognise" in reply.await_args.args[0].lower()
+    assert asyncio.run(gdb.get_user(777)) is None
+
+
+@pytest.mark.parametrize("attempt", ["FA-ABC-DEF", "FA-ABCDE", "fa-abcde-fghj"])
+def test_a_mistyped_code_gets_an_answer_not_silence(live, attempt):
+    """Silence on a near-miss reads as a broken bot, and a dropped character is
+    the likeliest thing to go wrong between a screenshot and a keyboard."""
+    reply = _redeem(attempt)
+
+    answer = reply.await_args.args[0].lower()
+    assert "nearly" in answer and "not quite" in answer
+    assert asyncio.run(gdb.get_user(777)) is None
+
+
+def test_ordinary_chatter_is_still_ignored(live):
+    """Only FA- prefixed messages get the code treatment; everything else falls
+    through to the flow it belongs to."""
+    reply = _redeem("hey, is anyone there?")
+
+    reply.assert_not_awaited()
+
+
+def test_a_code_is_accepted_however_they_paste_it(live):
+    """Lowercased, with stray spaces — both are what people actually send."""
+    token, _ = _issue()
+
+    _redeem(f"  {token.lower()} ")
+
+    assert asyncio.run(gdb.get_user(777))["status"] == "awaiting_form"
+
+
+def test_an_intro_is_never_mistaken_for_a_code(live):
+    """The code branch runs before the intro branch, so it matches the whole
+    message only — an intro opening with a code-shaped word is still an intro."""
+    asyncio.run(gdb.mark_awaiting_intro(555, "alice", "Alice", "Alice A"))
+    ctx = _ctx(member_status=None)
+    update, _ = _dm("FA-ABCDE-FGHJK " + _intro(60), user=_user())
+
+    asyncio.run(gh.on_private_text(update, ctx))
+
+    assert asyncio.run(gdb.get_user(555))["status"] == "registered"
+
+
+def test_tokens_are_not_stored_in_the_clear(live):
+    """The DB is backed up on a schedule; a redeemable code in it is a key."""
+    token, _ = _issue()
+
+    rows = asyncio.run(gdb.invite_tokens())
+
+    assert token not in str(rows)
+    assert rows[0]["token_hash"] != token
+
+
+def test_only_admins_can_mint_codes(live):
+    update, reply = _dm(None, user=_user(uid=999999))
+
+    asyncio.run(gh.token_command(update, _ctx(args=["Sneaky"])))
+
+    reply.assert_not_awaited()
+    assert asyncio.run(gdb.invite_tokens()) == []
+
+
+def test_tokens_are_not_stored_in_the_clear(live):
+    """The DB is backed up on a schedule; a redeemable code in it is a key."""
+    token, _ = _issue()
+
+    rows = asyncio.run(gdb.invite_tokens())
+
+    assert token not in str(rows)
+    assert rows[0]["token_hash"] != token
+
+
+def test_only_admins_can_mint_codes(live):
+    update, reply = _dm(None, user=_user(uid=999999))
+
+    asyncio.run(gh.token_command(update, _ctx()))
+
+    reply.assert_not_awaited()
+    assert asyncio.run(gdb.invite_tokens()) == []
 
 
 # ── The follow-up sweep ─────────────────────────────────────────────────────────

@@ -310,6 +310,22 @@ def build():
             ("Anything else", f"Message {CONTACT}."),
         ]),
         Spacer(1, 5),
+        Spacer(1, 6),
+        Paragraph("<b>Someone who isn't in any of our groups</b>", h2),
+        Paragraph(
+            "A guest speaker, or a graduate who left every chat years ago, can't be "
+            "found by the checks above. Send <b>/gate_token</b> to the bot in a "
+            "private chat, with a note about who it's for — it replies with a "
+            "one-off code like <code>FA-K7M2Q-XR94T</code>. Pass that to the "
+            "person; they paste it to the bot and go through the same onboarding, "
+            "skipping the group check.\n\n"
+            "The code works once and expires after 30 days. The bot only stores a "
+            "fingerprint of it, so that reply is the only copy — if you lose it, "
+            "issue another. <b>/gate_tokens</b> lists what you've handed out and "
+            "<b>/gate_revoke</b> cancels an unused one.",
+            body,
+        ),
+        Spacer(1, 5),
         Paragraph(
             "Once you're on the admin list you also have <b>/gate_stats</b> (how "
             "many are in, mid-onboarding, or unengaged), <b>/gate_groups</b> (every "

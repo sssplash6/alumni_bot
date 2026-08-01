@@ -32,8 +32,11 @@ Everything here is dormant unless settings.active() — the master switch plus a
 configured alumni group.
 """
 import asyncio
+import hashlib
 import html
 import logging
+import re
+import secrets
 from datetime import datetime, timedelta, timezone
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -76,6 +79,27 @@ _ANNOUNCE_TICK_SECONDS = 3600
 # group, while a batched mention still notifies everyone named.
 _FOLLOWUP_BATCH = 8
 _FOLLOWUP_BATCH_PAUSE = 4.0
+
+# ── Invite tokens ───────────────────────────────────────────────────────────────
+# Format: FA-XXXXX-XXXXX. The alphabet drops I, L, O, 0 and 1, because these get
+# read aloud, retyped from a screenshot and pasted by people on phones, and
+# "was that an O or a zero" is a support message we'd rather not answer.
+#
+# Ten characters from 31 gives about 49 bits. Guessing one over a chat interface
+# that rate-limits is not a threat; the realistic risk is a token being forwarded,
+# which is what single-use, expiry and /gate_revoke are for.
+_TOKEN_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+_TOKEN_GROUP = 5
+_TOKEN_PREFIX = "FA-"
+_TOKEN_RE = re.compile(rf"^FA-([{_TOKEN_ALPHABET}]{{{_TOKEN_GROUP}}})-"
+                       rf"([{_TOKEN_ALPHABET}]{{{_TOKEN_GROUP}}})$")
+
+# Anything starting FA- and no longer than this is treated as an ATTEMPT at a
+# code, and answered even when it doesn't parse — dropping a character or
+# mistyping an O for a 0 otherwise gets silence, which reads as a broken bot.
+# The length bound is what stops a fifty-word intro opening with "FA-" from
+# being answered as a malformed code instead of an intro. A real one is 14.
+_TOKEN_ATTEMPT_MAX = 24
 
 # Which groups are known, and which of those are approved. Held in memory because
 # they're consulted on every group message, and refreshed whenever they change —
@@ -732,7 +756,7 @@ async def start_onboarding(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     # standing between a stranger and an invite link is filling in a public form.
     # Checked here, at the single door into onboarding, rather than at each later
     # step — the statuses those steps read can only be reached through this one.
-    if settings.REQUIRE_WATCHED_GROUP:
+    if settings.REQUIRE_WATCHED_GROUP and not await db.is_exempt(user.id):
         eligible = await _in_an_approved_group(context, user.id)
         if eligible is None:
             await message.reply_text(msg.ELIGIBILITY_UNAVAILABLE, parse_mode="HTML")
@@ -831,6 +855,114 @@ async def _issue_invite(
     return link
 
 
+def _new_token() -> str:
+    """A fresh invite code. Never stored in this form — see _token_hash."""
+    body = "".join(
+        secrets.choice(_TOKEN_ALPHABET) for _ in range(_TOKEN_GROUP * 2)
+    )
+    return f"FA-{body[:_TOKEN_GROUP]}-{body[_TOKEN_GROUP:]}"
+
+
+def _compact(text: str) -> str:
+    """What they sent, minus the ways people mangle a code in transit.
+
+    Lowercased and with a stray space are both normal; anything looser is not
+    accepted, because matching a code *inside* longer text would let a fifty-word
+    intro be read as one.
+    """
+    return "".join(text.split()).upper()
+
+
+def _is_token(compact: str) -> bool:
+    return bool(_TOKEN_RE.match(compact))
+
+
+def _is_token_attempt(compact: str) -> bool:
+    """Plainly meant to be a code, whether or not it actually parses."""
+    return compact.startswith(_TOKEN_PREFIX) and len(compact) <= _TOKEN_ATTEMPT_MAX
+
+
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _token_expiry() -> str | None:
+    if settings.TOKEN_TTL_DAYS <= 0:
+        return None
+    return (
+        datetime.now(timezone.utc) + timedelta(days=settings.TOKEN_TTL_DAYS)
+    ).isoformat()
+
+
+def _token_state(row: dict) -> str:
+    """Why a token can't be used — or 'ok'."""
+    if row["revoked_at"]:
+        return "revoked"
+    if row["redeemed_by"]:
+        return "used"
+    expires = _parse_ts(row["expires_at"])
+    if expires and datetime.now(timezone.utc) >= expires:
+        return "expired"
+    return "ok"
+
+
+async def _redeem_token(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, user, token: str
+) -> None:
+    """Spend an invite code, then drop the person into onboarding.
+
+    The exemption is recorded on the user and outlives the token, so someone who
+    redeems and then wanders off can come back through /alumni without needing a
+    second code — the eligibility check runs again every time they re-enter.
+    """
+    if not settings.LIVE:
+        await update.message.reply_text(msg.COMING_SOON, parse_mode="HTML")
+        return
+
+    row = await db.find_invite_token(_token_hash(token))
+    state = _token_state(row) if row else "unknown"
+    if state != "ok":
+        logger.info(
+            "Rejected invite token from user %d (@%s): %s",
+            user.id, user.username, state,
+        )
+        await update.message.reply_text(
+            msg.TOKEN_USED if state in ("used", "revoked") else
+            msg.TOKEN_EXPIRED if state == "expired" else msg.TOKEN_INVALID,
+            parse_mode="HTML",
+        )
+        return
+
+    if not await db.redeem_invite_token(row["id"], user.id):
+        # Lost a race with another redemption of the same code.
+        await update.message.reply_text(msg.TOKEN_USED, parse_mode="HTML")
+        return
+
+    await db.mark_exempt(user.id)
+    logger.info(
+        "Invite token %d redeemed by user %d (@%s) — note: %s",
+        row["id"], user.id, user.username, row["note"] or "—",
+    )
+
+    await update.message.reply_text(msg.TOKEN_ACCEPTED, parse_mode="HTML")
+    for admin_id in ADMIN_IDS:
+        try:
+            await context.bot.send_message(
+                chat_id=admin_id,
+                text=msg.TOKEN_REDEEMED_ALERT.format(
+                    token_id=row["id"],
+                    note=html.escape(row["note"] or "—"),
+                    who=_mention(user.id, user.first_name),
+                    username=f"@{user.username}" if user.username else "no username",
+                ),
+                parse_mode="HTML",
+            )
+        except Exception:
+            logger.debug("Could not tell admin %d about a token redemption", admin_id)
+
+    await start_onboarding(update, context)
+
+
 async def _on_full_name(update: Update, user, text: str) -> None:
     """They've typed the name on their submission; look the form up by it."""
     name = " ".join(text.split())
@@ -869,6 +1001,25 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     user = update.effective_user
     if user is None:
         return
+
+    text = (update.message.text or "").strip()
+    if not text:
+        return
+
+    # Invite codes are handled before the row lookup below, because the people
+    # they exist for have no gate record at all — they were refused at the door,
+    # or never reached it — and that lookup returns early on exactly those people.
+    compact = _compact(text)
+    if _is_token(compact):
+        await _redeem_token(update, context, user, compact)
+        return
+    if _is_token_attempt(compact):
+        # Recognisably a code, but not a well-formed one. Answered rather than
+        # ignored: the likeliest cause is a typo, and silence would leave them
+        # convinced the bot is broken.
+        await update.message.reply_text(msg.TOKEN_MALFORMED, parse_mode="HTML")
+        return
+
     row = await db.get_user(user.id)
     if row is None:
         return
@@ -880,10 +1031,6 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             parse_mode="HTML",
             reply_markup=_join_markup(row["invite_link"]),
         )
-        return
-
-    text = (update.message.text or "").strip()
-    if not text:
         return
 
     if row["status"] == "awaiting_name":
@@ -1119,6 +1266,96 @@ async def groups_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
 
+async def token_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Mint a one-off invite code (admins, DM only).
+
+    DM only, and deliberately so: the reply contains a working key to the alumni
+    group, and there is no version of running this in a group that ends well.
+
+    Takes a free-text note — who it's for, why — because a list of anonymous codes
+    is impossible to audit later, and the note is the only thing that makes
+    /gate_revoke usable when you've forgotten which code was which.
+    """
+    if not _is_admin(update.effective_user.id):
+        return
+
+    note = " ".join(context.args or []).strip() or None
+    token = _new_token()
+    token_id = await db.create_invite_token(
+        _token_hash(token), note, update.effective_user.id, _token_expiry()
+    )
+
+    ttl = (
+        msg.TOKEN_TTL_DAYS.format(days=settings.TOKEN_TTL_DAYS)
+        if settings.TOKEN_TTL_DAYS > 0 else msg.TOKEN_TTL_NEVER
+    )
+    logger.info(
+        "Admin %d issued invite token %d (note: %s)",
+        update.effective_user.id, token_id, note or "—",
+    )
+    await update.message.reply_text(
+        msg.TOKEN_CREATED.format(
+            token=token,
+            token_id=token_id,
+            note=html.escape(note) if note else "—",
+            ttl=ttl,
+        ),
+        parse_mode="HTML",
+    )
+
+
+async def tokens_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """List issued codes and what became of them (admins, DM only).
+
+    Shows state and notes, never values — they aren't stored, only their hashes.
+    """
+    if not _is_admin(update.effective_user.id):
+        return
+
+    rows = await db.invite_tokens()
+    if not rows:
+        await update.message.reply_text(msg.TOKENS_EMPTY, parse_mode="HTML")
+        return
+
+    lines = [msg.TOKENS_HEADER.format(count=len(rows)), ""]
+    for row in rows:
+        state = _token_state(row)
+        lines.append(msg.TOKENS_ENTRY.format(
+            token_id=row["id"],
+            state=msg.TOKEN_STATES.get(state, state),
+            note=html.escape(row["note"] or "—"),
+        ))
+    lines += ["", msg.TOKENS_FOOTER]
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+
+async def revoke_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Kill an unredeemed code by its id from /gate_tokens (admins, DM only)."""
+    if not _is_admin(update.effective_user.id):
+        return
+
+    args = context.args or []
+    if not args or not args[0].lstrip("#").isdigit():
+        await update.message.reply_text(msg.REVOKE_USAGE, parse_mode="HTML")
+        return
+
+    token_id = int(args[0].lstrip("#"))
+    if await db.revoke_invite_token(token_id):
+        logger.info("Admin %d revoked invite token %d",
+                    update.effective_user.id, token_id)
+        await update.message.reply_text(
+            msg.REVOKE_DONE.format(token_id=token_id), parse_mode="HTML"
+        )
+        return
+
+    # Already spent, already revoked, or never existed. Said as one message
+    # because the difference doesn't change what an admin does next, and a code
+    # that is definitely not usable is the only outcome that matters.
+    await update.message.reply_text(
+        msg.REVOKE_NOTHING.format(token_id=token_id), parse_mode="HTML"
+    )
+
+
 async def _announce_targets(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> list[int] | None:
@@ -1237,6 +1474,10 @@ def register(app: Application) -> None:
     app.add_handler(CommandHandler("gate_watch", watch_command))
     app.add_handler(CommandHandler("gate_unwatch", unwatch_command))
     app.add_handler(CommandHandler("gate_groups", groups_command, filters=_private))
+    # DM-only, no group variant: the reply to /gate_token is a working key.
+    app.add_handler(CommandHandler("gate_token", token_command, filters=_private))
+    app.add_handler(CommandHandler("gate_tokens", tokens_command, filters=_private))
+    app.add_handler(CommandHandler("gate_revoke", revoke_command, filters=_private))
 
     app.add_handler(ChatMemberHandler(on_chat_member, ChatMemberHandler.CHAT_MEMBER))
     # group=1: the host bot already handles MY_CHAT_MEMBER to report chat IDs, and
