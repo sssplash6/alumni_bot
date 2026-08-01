@@ -311,8 +311,8 @@ def build():
         Paragraph("<b>Someone who isn't in any of our groups</b>", h2),
         Paragraph(
             "A guest speaker, or a graduate who left every chat years ago, can't be "
-            "found by the checks above. <b>Message Samandar</b> for a one-off invite "
-            "code — it looks like <code>FA-K7M2Q-XR94T</code>. Give it to the "
+            f"found by the checks above. <b>Message Samandar ({CONTACT})</b> for a "
+            "one-off invite code — it looks like <code>FA-K7M2Q-XR94T</code>. Give it to the "
             "person; they paste it to the bot in a private chat and go through the "
             "same onboarding, skipping the group check. Each code works once and "
             "expires after 30 days.",
