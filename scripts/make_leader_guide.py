@@ -203,13 +203,11 @@ def build():
     ], style=lead, gap=6))
 
     story.append(Spacer(1, 14))
-    story.append(panel("First time only: get yourself on the admin list.", [
-        f"Send <b>/id</b> to {BOT} in a private chat and give the number it replies "
-        f"with to <b>{CONTACT}</b>. This happens once, not per group — after that "
-        "every group you set up is entirely self-service.",
-        "Step 3 needs it because switching a group on is what makes being a member "
-        "there count towards joining the Alumni group. If just anyone could do it, "
-        "they could make a group and let themselves in. Until you're on the list, "
+    story.append(panel("Step 3 is department leads only.", [
+        "If you're not a dep lead, do steps 1 and 2 and ask yours to run the "
+        "command in the group — it takes them a second.",
+        "Switching a group on is what makes being a member of it count towards "
+        "joining the Alumni group, so it's kept to dep leads. For anyone else "
         "<b>/gate_announce</b> stays silent rather than refusing.",
     ], style=lead))
 
@@ -245,7 +243,7 @@ def build():
             "Promoting the bot also tells it the group exists — but on its own that "
             "grants nothing, because anyone can promote a bot in a group they just "
             "made. Step 3 is the part that counts, and it's why that command is "
-            "restricted to people we've added to the admin list.",
+            "restricted to dep leads.",
             body,
         ),
     ))
@@ -291,10 +289,9 @@ def build():
         "If something looks wrong",
         symptom_table([
             ("/gate_announce does nothing",
-             "Usually you're not on the admin list yet — see the box on page 1; it "
-             "stays silent rather than refusing. Otherwise the bot is a member but "
-             "not an <b>Administrator</b>, and can't post or read the group without "
-             "that."),
+             "Usually you're not a dep lead — it stays silent rather than refusing. "
+             "Otherwise the bot is a member but not an <b>Administrator</b>, and "
+             "can't post or read the group without that."),
             ("Nothing happened at all",
              "Step 3 hasn't been done. Adding and promoting the bot alone leaves the "
              "group switched off — that's deliberate, not a fault."),
@@ -314,23 +311,19 @@ def build():
         Paragraph("<b>Someone who isn't in any of our groups</b>", h2),
         Paragraph(
             "A guest speaker, or a graduate who left every chat years ago, can't be "
-            "found by the checks above. Send <b>/gate_token</b> to the bot in a "
-            "private chat, with a note about who it's for — it replies with a "
-            "one-off code like <code>FA-K7M2Q-XR94T</code>. Pass that to the "
-            "person; they paste it to the bot and go through the same onboarding, "
-            "skipping the group check.\n\n"
-            "The code works once and expires after 30 days. The bot only stores a "
-            "fingerprint of it, so that reply is the only copy — if you lose it, "
-            "issue another. <b>/gate_tokens</b> lists what you've handed out and "
-            "<b>/gate_revoke</b> cancels an unused one.",
+            "found by the checks above. <b>Message Samandar</b> for a one-off invite "
+            "code — it looks like <code>FA-K7M2Q-XR94T</code>. Give it to the "
+            "person; they paste it to the bot in a private chat and go through the "
+            "same onboarding, skipping the group check. Each code works once and "
+            "expires after 30 days.",
             body,
         ),
         Spacer(1, 5),
         Paragraph(
-            "Once you're on the admin list you also have <b>/gate_stats</b> (how "
-            "many are in, mid-onboarding, or unengaged), <b>/gate_groups</b> (every "
-            "group switched on) and <b>/gate_unwatch</b> (switch a group back off) "
-            "— all in a private chat with the bot. Every one of them answers you "
+            "Dep leads also have <b>/gate_stats</b> (how many are in, "
+            "mid-onboarding, or unengaged), <b>/gate_groups</b> (every group "
+            "switched on) and <b>/gate_unwatch</b> (switch a group back off) — all "
+            "in a private chat with the bot. Every one of them answers you "
             "privately, even when typed in a group.",
             small,
         ),
