@@ -223,6 +223,7 @@ services:
       #   BACKUP_KEEP                default 14
       #   GATE_INTRO_MIN_WORDS       default 50
       #   GATE_TOKEN_TTL_DAYS        default 3    (0 = invite codes never expire)
+      #   GATE_INTRO_REMINDER_HOURS  default 3    (0 disables the intro chase)
       #   GATE_ANNOUNCE_INTERVAL_DAYS default 5   (0 disables the re-post)
       #   GATE_POLL_INTERVAL_MINUTES default 3    (0 disables the Airtable poll)
       #   GATE_AIRTABLE_TG_FIELD     default tg_id

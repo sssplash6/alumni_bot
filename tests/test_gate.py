@@ -853,6 +853,159 @@ def test_true_already_claim_says_nothing_at_all(live):
     ctx.bot.send_message.assert_not_awaited()
 
 
+# ── The intro reminder ──────────────────────────────────────────────────────────
+#
+# The last step of onboarding — re-posting the intro in the alumni group — is the
+# one with nothing enforcing it: by then they already hold the invite link.
+
+def _joined(uid=777, hours_ago=0):
+    """Someone who walked into the alumni group `hours_ago` hours back."""
+    asyncio.run(gdb.mark_joined_group(uid, f"u{uid}", f"U{uid}"))
+    if hours_ago:
+        import aiosqlite
+        from datetime import datetime, timedelta, timezone
+
+        async def _backdate():
+            when = (
+                datetime.now(timezone.utc) - timedelta(hours=hours_ago)
+            ).isoformat()
+            async with aiosqlite.connect(gdb.DB_PATH) as db:
+                await db.execute(
+                    "UPDATE gate_users SET joined_group_at = ? WHERE user_id = ?",
+                    (when, uid),
+                )
+                await db.commit()
+
+        asyncio.run(_backdate())
+
+
+def _post_in(chat_id, uid=777, is_bot=False):
+    asyncio.run(gh.on_group_message(SimpleNamespace(
+        effective_chat=SimpleNamespace(id=chat_id, type="supergroup"),
+        effective_user=_user(uid=uid, is_bot=is_bot),
+    ), _ctx()))
+
+
+def test_joining_the_alumni_group_starts_the_clock(live):
+    ctx = _ctx()
+    asyncio.run(gh.on_chat_member(SimpleNamespace(chat_member=SimpleNamespace(
+        chat=SimpleNamespace(id=ALUMNI_GROUP),
+        old_chat_member=SimpleNamespace(status="left"),
+        new_chat_member=SimpleNamespace(status="member", user=_user(uid=777)),
+    )), ctx))
+
+    row = asyncio.run(gdb.get_user(777))
+    assert row["status"] == "member"
+    assert row["joined_group_at"] is not None
+
+
+def test_posting_in_the_alumni_group_stops_the_clock(live):
+    _joined(777)
+
+    _post_in(ALUMNI_GROUP, 777)
+
+    assert asyncio.run(gdb.get_user(777))["intro_posted_at"] is not None
+
+
+def test_someone_silent_for_three_hours_is_reminded(live):
+    _joined(777, hours_ago=4)
+    ctx = _ctx()
+
+    asyncio.run(gh.intro_reminder_job(ctx))
+
+    kwargs = ctx.bot.send_message.await_args.kwargs
+    assert kwargs["chat_id"] == 777
+    assert "intro" in kwargs["text"].lower()
+    assert asyncio.run(gdb.get_user(777))["intro_reminded_at"] is not None
+
+
+def test_someone_who_posted_is_left_alone(live):
+    _joined(777, hours_ago=4)
+    _post_in(ALUMNI_GROUP, 777)
+    ctx = _ctx()
+
+    asyncio.run(gh.intro_reminder_job(ctx))
+
+    ctx.bot.send_message.assert_not_awaited()
+
+
+def test_someone_who_only_just_joined_is_left_alone(live):
+    _joined(777, hours_ago=1)
+    ctx = _ctx()
+
+    asyncio.run(gh.intro_reminder_job(ctx))
+
+    ctx.bot.send_message.assert_not_awaited()
+
+
+def test_the_reminder_is_sent_once_and_only_once(live):
+    _joined(777, hours_ago=4)
+    ctx = _ctx()
+
+    asyncio.run(gh.intro_reminder_job(ctx))
+    asyncio.run(gh.intro_reminder_job(ctx))
+
+    assert ctx.bot.send_message.await_count == 1
+
+
+def test_an_undeliverable_reminder_is_not_retried_forever(live):
+    """Someone added to the group by hand may never have started the bot. That
+    won't change, so a failed send must still close the row out."""
+    _joined(777, hours_ago=4)
+    ctx = _ctx()
+    ctx.bot.send_message = AsyncMock(side_effect=Forbidden("bot can't initiate"))
+
+    asyncio.run(gh.intro_reminder_job(ctx))
+
+    assert asyncio.run(gdb.get_user(777))["intro_reminded_at"] is not None
+
+
+def test_people_who_predate_the_gate_are_never_chased(live):
+    """No join event was ever seen for them, so there is no clock to run — they
+    must not be asked for an intro nobody ever requested."""
+    asyncio.run(gdb.mark_member(777, "old", "Old"))
+    ctx = _ctx()
+
+    asyncio.run(gh.intro_reminder_job(ctx))
+
+    ctx.bot.send_message.assert_not_awaited()
+
+
+def test_the_alumni_group_is_still_never_treated_as_watched(live):
+    """Listening there for intros must not turn it into a group we police."""
+    _post_in(ALUMNI_GROUP, 901)
+
+    assert asyncio.run(gdb.get_user(901)) is None
+    assert not gh.is_approved(ALUMNI_GROUP)
+
+
+def test_bots_posting_in_the_alumni_group_are_ignored(live):
+    _joined(777, hours_ago=4)
+
+    _post_in(ALUMNI_GROUP, 777, is_bot=True)
+
+    assert asyncio.run(gdb.get_user(777))["intro_posted_at"] is None
+
+
+def test_the_reminder_is_off_when_the_delay_is_zero(live):
+    _joined(777, hours_ago=4)
+    ctx = _ctx()
+
+    with patch.object(settings, "INTRO_REMINDER_HOURS", 0):
+        asyncio.run(gh.intro_reminder_job(ctx))
+
+    ctx.bot.send_message.assert_not_awaited()
+
+
+def test_rejoining_does_not_hand_out_a_fresh_grace_period(live):
+    _joined(777, hours_ago=4)
+    before = asyncio.run(gdb.get_user(777))["joined_group_at"]
+
+    asyncio.run(gdb.mark_joined_group(777, "u777", "U777"))
+
+    assert asyncio.run(gdb.get_user(777))["joined_group_at"] == before
+
+
 # ── Invite tokens: admitting someone who's in none of the approved groups ───────
 
 def _expire_all_tokens():

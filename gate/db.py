@@ -71,6 +71,19 @@ async def init_schema() -> None:
             )
         except aiosqlite.OperationalError:
             pass
+        # The intro-reminder clock. joined_group_at starts it, intro_posted_at
+        # stops it, intro_reminded_at makes sure it only rings once. All three are
+        # null for everyone who was already in the group when this shipped, which
+        # is why they are never chased about an intro nobody asked them for.
+        for column in (
+            "joined_group_at TEXT",
+            "intro_posted_at TEXT",
+            "intro_reminded_at TEXT",
+        ):
+            try:
+                await db.execute(f"ALTER TABLE gate_users ADD COLUMN {column}")
+            except aiosqlite.OperationalError:
+                pass
         await db.execute("""
             CREATE TABLE IF NOT EXISTS gate_announcements (
                 chat_id    INTEGER PRIMARY KEY,
@@ -351,6 +364,85 @@ async def monitored_chats() -> list[dict]:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT * FROM gate_monitored_chats ORDER BY added_at"
+        )
+        return [dict(row) for row in await cur.fetchall()]
+
+
+# ── The intro reminder ──────────────────────────────────────────────────────────
+
+async def mark_joined_group(
+    user_id: int, username: str | None, first_name: str | None
+) -> None:
+    """They have just walked into the alumni group. Starts the intro clock.
+
+    ``joined_group_at`` is written once and then preserved: someone who leaves and
+    rejoins doesn't get a second grace period they already had. Distinct from
+    mark_member, which means "we discovered they're in there" and can fire long
+    after the fact — only a join event knows *when*.
+    """
+    now = _now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO gate_users
+                (user_id, username, first_name, status, joined_group_at, updated_at)
+            VALUES (?, ?, ?, 'member', ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                username        = COALESCE(excluded.username, gate_users.username),
+                first_name      = COALESCE(excluded.first_name, gate_users.first_name),
+                status          = 'member',
+                joined_group_at = COALESCE(
+                    gate_users.joined_group_at, excluded.joined_group_at
+                ),
+                updated_at      = excluded.updated_at
+            """,
+            (user_id, username, first_name, now, now),
+        )
+        await db.commit()
+
+
+async def mark_intro_posted(user_id: int) -> None:
+    """They've said something in the alumni group, so stop the clock.
+
+    Only writes if it's still null, so the timestamp means "first posted", and
+    only touches rows that exist — people who predate the gate have none, and
+    inventing one would put them in a reminder they were never owed.
+    """
+    now = _now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE gate_users SET intro_posted_at = ?, updated_at = ? "
+            "WHERE user_id = ? AND intro_posted_at IS NULL",
+            (now, now, user_id),
+        )
+        await db.commit()
+
+
+async def mark_intro_reminded(user_id: int) -> None:
+    now = _now()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE gate_users SET intro_reminded_at = ?, updated_at = ? "
+            "WHERE user_id = ?",
+            (now, now, user_id),
+        )
+        await db.commit()
+
+
+async def users_missing_intro(cutoff_iso: str) -> list[dict]:
+    """Joined before the cutoff, still hasn't posted, hasn't been reminded."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            """
+            SELECT * FROM gate_users
+             WHERE joined_group_at IS NOT NULL
+               AND joined_group_at <= ?
+               AND intro_posted_at IS NULL
+               AND intro_reminded_at IS NULL
+             ORDER BY joined_group_at
+            """,
+            (cutoff_iso,),
         )
         return [dict(row) for row in await cur.fetchall()]
 

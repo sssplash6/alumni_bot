@@ -84,6 +84,16 @@ ANNOUNCE_INTERVAL_DAYS: int = int(
     os.environ.get("GATE_ANNOUNCE_INTERVAL_DAYS", "5") or "5"
 )
 
+# How long after someone joins the alumni group to check whether they actually
+# posted their intro, in hours. 0 disables the check.
+#
+# The clock starts when they JOIN, not when they were handed their link: you
+# can't post in a group you haven't walked into yet. They get one private
+# reminder and then are left alone — this is a nudge, not enforcement.
+INTRO_REMINDER_HOURS: int = int(
+    os.environ.get("GATE_INTRO_REMINDER_HOURS", "3") or "3"
+)
+
 # How often (minutes) to re-check students still waiting on their form. 0
 # disables the poll and relies solely on the button.
 POLL_INTERVAL_MINUTES: int = int(

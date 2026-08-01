@@ -203,6 +203,19 @@ ALREADY_REGISTERED = (
 
 ALREADY_MEMBER = "✅ You're already in the Alumni group — you're all set! 🎉"
 
+# A few hours after joining, if they still haven't said anything in the group.
+# One reminder, in private, then never again — they're already in, so there is
+# nothing to enforce with and nothing worth souring a welcome over.
+INTRO_REMINDER = (
+    "👋 Welcome to the <b>Freshman Alumni Network</b>!\n\n"
+    "One last thing: it looks like you haven't posted your <b>intro</b> in the "
+    "group yet. It's how people know who you are — and it's what makes the "
+    "network worth being in for everyone else too.\n\n"
+    "Just send the same intro you wrote for me into the group whenever you get a "
+    "minute — you can scroll up and copy it from our chat.\n\n"
+    "<i>Already posted it? Then ignore this — I may simply have missed it.</i>"
+)
+
 LINK_FAILED = (
     f"⚠️ Something went wrong creating your invite link. Please message {ADMIN_CONTACT} "
     "and we'll sort it out."

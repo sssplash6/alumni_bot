@@ -80,6 +80,12 @@ _ANNOUNCE_TICK_SECONDS = 3600
 _FOLLOWUP_BATCH = 8
 _FOLLOWUP_BATCH_PAUSE = 4.0
 
+# The intro reminder is due at a per-person deadline rather than on a shared
+# cycle, so the job ticks often and lets the stored join time decide. Quarter of
+# an hour keeps it within a sensible margin of the configured delay without the
+# query being anything more than a few indexed rows.
+_INTRO_TICK_SECONDS = 900
+
 # ── Invite tokens ───────────────────────────────────────────────────────────────
 # Format: FA-XXXXX-XXXXX. The alphabet drops I, L, O, 0 and 1, because these get
 # read aloud, retyped from a screenshot and pasted by people on phones, and
@@ -400,8 +406,9 @@ async def on_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if chat_id == settings.GROUP_ID and settings.GROUP_ID != 0:
         # They made it into the alumni group — record it so stats stay honest and
-        # we never nudge them.
-        await db.mark_member(user.id, user.username, user.first_name)
+        # we never nudge them. This is also the only moment that knows *when* they
+        # arrived, which is what the intro reminder counts from.
+        await db.mark_joined_group(user.id, user.username, user.first_name)
         return
 
     if is_approved(chat_id):
@@ -468,9 +475,27 @@ async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 
 async def on_group_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """First-time posters in an approved group get checked."""
+    """First-time posters in an approved group get checked.
+
+    The alumni group is never approved — it's the destination — but it is the one
+    other chat worth listening to, because a newcomer posting there is how we know
+    they introduced themselves.
+    """
     chat = update.effective_chat
-    if chat is None or not is_approved(chat.id):
+    if chat is None:
+        return
+
+    if settings.GROUP_ID != 0 and chat.id == settings.GROUP_ID:
+        user = update.effective_user
+        if user is not None and not user.is_bot:
+            # Any message counts, not just one long enough to be the intro. The
+            # reminder exists to catch people who joined and went silent, and
+            # nagging someone who is visibly taking part about the word count of
+            # their introduction is the bot being a pedant.
+            await db.mark_intro_posted(user.id)
+        return
+
+    if not is_approved(chat.id):
         return
     await _process_user(context, chat.id, update.effective_user)
 
@@ -623,6 +648,46 @@ async def followup_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             # Space the batches out, but don't idle after the last one.
             if start + _FOLLOWUP_BATCH < len(stale):
                 await asyncio.sleep(_FOLLOWUP_BATCH_PAUSE)
+
+
+async def intro_reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Privately chase anyone who joined the alumni group and never said anything.
+
+    The last thing onboarding asks for is that they re-post their intro in the
+    group, and it's the step with nothing enforcing it — they already have the
+    invite link by then, so there's no lever left and none is wanted. This is one
+    quiet reminder, in their DMs, and then we leave them alone.
+
+    Nothing is posted in the group: an unanswered public "where's your intro?"
+    would be the worst possible welcome.
+    """
+    if not settings.active() or settings.INTRO_REMINDER_HOURS <= 0:
+        return
+
+    cutoff = (
+        datetime.now(timezone.utc)
+        - timedelta(hours=settings.INTRO_REMINDER_HOURS)
+    ).isoformat()
+
+    for row in await db.users_missing_intro(cutoff):
+        try:
+            await context.bot.send_message(
+                chat_id=row["user_id"],
+                text=msg.INTRO_REMINDER,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+            logger.info("Reminded user %d to post their intro", row["user_id"])
+        except Exception:
+            # Almost certainly someone who joined by other means and never
+            # started the bot. It will not become deliverable later.
+            logger.debug(
+                "Could not send the intro reminder to user %d", row["user_id"]
+            )
+
+        # Marked either way. A reminder we couldn't deliver is not one to retry
+        # forever, and the alternative is this row coming back every tick.
+        await db.mark_intro_reminded(row["user_id"])
 
 
 async def on_join_tap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1535,4 +1600,13 @@ def register(app: Application) -> None:
         logger.info(
             "Gate announcement re-posts every %d days; unengaged people are "
             "chased on the same cycle", settings.ANNOUNCE_INTERVAL_DAYS
+        )
+
+    if settings.INTRO_REMINDER_HOURS > 0:
+        app.job_queue.run_repeating(
+            intro_reminder_job, interval=_INTRO_TICK_SECONDS, first=300
+        )
+        logger.info(
+            "Intro reminder: newcomers who haven't posted %d h after joining get "
+            "one DM", settings.INTRO_REMINDER_HOURS
         )
