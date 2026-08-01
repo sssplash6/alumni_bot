@@ -115,7 +115,7 @@ WELCOME_ONBOARDING = (
     "“<b>I've completed the form ✅</b>” below — I'll verify it, then ask you for your "
     "intro, and send you your personal invite link automatically.\n\n"
     "Sincerely,\n"
-    "Hazratbek — Freshman Council"
+    "The Freshman Council"
 )
 FORM_BUTTON = "📝 Complete the form"
 DOC_BUTTON = "📖 Read the values doc"
