@@ -248,32 +248,23 @@ def _announced_chats(ctx):
     ]
 
 
-def test_a_group_leader_can_announce_in_their_own_group(live):
-    """Not on the bot's admin list, but runs the group — the whole point."""
-    ctx = _ctx(member_status=None, watched_status="administrator")
-    update, _ = _group_cmd(chat_id=MONITORED, admin=False)
+def test_announcing_in_a_group_approves_it(live):
+    """The command IS the approval — that's what keeps the two from drifting."""
+    ctx = _ctx(member_status=None)
+    asyncio.run(gh.on_my_chat_member(_promotion(chat_id=-100555), _bot_ctx()))
+    assert not gh.is_approved(-100555)
 
+    update, _ = _group_cmd(chat_id=-100555)
     asyncio.run(gh.announce_command(update, ctx))
 
-    assert _announced_chats(ctx) == [MONITORED]
+    assert gh.is_approved(-100555)
+    assert _announced_chats(ctx) == [-100555]
 
 
-def test_a_group_leader_cannot_fan_out_to_every_group(live):
-    """Run somewhere unwatched, the bot-admin path falls back to *all* monitored
-    groups. A leader reaching that fallback would turn one mistyped command into a
-    broadcast across groups they have nothing to do with."""
-    asyncio.run(gdb.add_monitored_chat(-100777, "Another cohort"))
-    asyncio.run(gh.refresh_monitored())
-    ctx = _ctx(member_status=None, watched_status="administrator")
-    update, _ = _group_cmd(chat_id=-100999123, admin=False)   # not watched
-
-    asyncio.run(gh.announce_command(update, ctx))
-
-    assert _announced_chats(ctx) == []
-
-
-def test_an_ordinary_member_cannot_announce(live):
-    ctx = _ctx(member_status=None, watched_status="member")
+def test_a_group_leader_cannot_announce_or_approve(live):
+    """A group's own admin isn't a bot admin. Letting them run this would let
+    anyone approve their own group, which is the hole it exists to close."""
+    ctx = _ctx(member_status=None, watched_status="creator")
     update, reply = _group_cmd(chat_id=MONITORED, admin=False)
 
     asyncio.run(gh.announce_command(update, ctx))
@@ -283,19 +274,20 @@ def test_an_ordinary_member_cannot_announce(live):
     reply.assert_not_awaited()
 
 
-def test_an_unreadable_status_grants_nothing(live):
-    """get_chat_member failing means we don't know, and unknown isn't a yes."""
+def test_announce_refuses_the_alumni_group_itself(live):
+    """Approving the destination would make being in it the qualification for
+    getting into it."""
     ctx = _ctx(member_status=None)
-    ctx.bot.get_chat_member = AsyncMock(side_effect=NetworkError("boom"))
-    update, _ = _group_cmd(chat_id=MONITORED, admin=False)
+    update, _ = _group_cmd(chat_id=ALUMNI_GROUP, title="Alumni")
 
     asyncio.run(gh.announce_command(update, ctx))
 
+    assert not gh.is_approved(ALUMNI_GROUP)
     assert _announced_chats(ctx) == []
 
 
-def test_a_bot_admin_in_a_dm_announces_everywhere(live):
-    asyncio.run(gdb.add_monitored_chat(-100777, "Another cohort"))
+def test_a_bot_admin_in_a_dm_announces_every_approved_group(live):
+    asyncio.run(gdb.approve_monitored_chat(-100777, "Another cohort"))
     asyncio.run(gh.refresh_monitored())
     ctx = _ctx(member_status=None)
     update, _ = _group_cmd(chat_id=ADMIN, chat_type="private")
@@ -305,8 +297,22 @@ def test_a_bot_admin_in_a_dm_announces_everywhere(live):
     assert sorted(_announced_chats(ctx)) == sorted([MONITORED, -100777])
 
 
+def test_a_dm_announce_skips_unapproved_groups(live):
+    """A DM carries no group to vouch for, so it can't approve one — and must not
+    announce into a group nobody has vouched for either."""
+    asyncio.run(gdb.add_monitored_chat(-100777, "Someone's random group"))
+    asyncio.run(gh.refresh_monitored())
+    ctx = _ctx(member_status=None)
+    update, _ = _group_cmd(chat_id=ADMIN, chat_type="private")
+
+    asyncio.run(gh.announce_command(update, ctx))
+
+    assert _announced_chats(ctx) == [MONITORED]
+    assert not gh.is_approved(-100777)
+
+
 def test_a_bot_admin_in_a_group_announces_only_there(live):
-    asyncio.run(gdb.add_monitored_chat(-100777, "Another cohort"))
+    asyncio.run(gdb.approve_monitored_chat(-100777, "Another cohort"))
     asyncio.run(gh.refresh_monitored())
     ctx = _ctx(member_status=None)
     update, _ = _group_cmd(chat_id=MONITORED)
@@ -1142,17 +1148,20 @@ def _bot_ctx(**kw):
     return ctx
 
 
-def test_promotion_to_admin_starts_watching(live):
+def test_promotion_to_admin_starts_watching_but_not_approving(live):
     ctx = _bot_ctx()
 
     asyncio.run(gh.on_my_chat_member(_promotion(), ctx))
 
     assert gh.is_monitored(-100555)
-    # Admins are told, so an unintended one can be undone.
+    assert not gh.is_approved(-100555)
+    # Admins are told, so a group they don't recognise can be dealt with.
     assert ctx.bot.send_message.await_args.kwargs["chat_id"] == ADMIN
 
 
-def test_watched_group_from_promotion_is_immediately_live(live):
+def test_a_promoted_but_unapproved_group_is_completely_inert(live):
+    """Anyone can create a group and promote the bot, so promotion alone must buy
+    nothing: no detection, no announcement, no roundup."""
     ctx = _bot_ctx()
     asyncio.run(gh.on_my_chat_member(_promotion(), ctx))
     ctx.bot.send_message.reset_mock()
@@ -1161,8 +1170,64 @@ def test_watched_group_from_promotion_is_immediately_live(live):
         effective_chat=SimpleNamespace(id=-100555, type="supergroup"),
         effective_user=_user(uid=901),
     ), ctx))
+    asyncio.run(gh.announce_job(ctx))
 
-    assert asyncio.run(gdb.get_user(901))["status"] == "nudged"
+    assert asyncio.run(gdb.get_user(901)) is None
+    assert -100555 not in _announced_chats(ctx)
+
+
+def _their_own_group_only(own=-100666):
+    """A bot that finds this person ONLY in the group they made themselves.
+
+    The shared _ctx answers every group with the same status, which would make an
+    attacker look like a member of the legitimately-approved group too — and hide
+    the very thing these two tests are about.
+    """
+    ctx = _bot_ctx(member_status=None)
+
+    def _member(chat_id, user_id):
+        if chat_id == own:
+            return SimpleNamespace(status="creator")
+        raise BadRequest("user not found")
+
+    ctx.bot.get_chat_member = AsyncMock(side_effect=_member)
+    return ctx
+
+
+def test_a_stranger_cannot_manufacture_their_own_eligibility(live):
+    """The attack the approval split exists to stop, end to end.
+
+    Make a group, add the bot, promote it — auto-watch enrols it. If eligibility
+    counted watched groups, that alone would let the person through onboarding,
+    and the form behind it is public and verifies nothing.
+    """
+    ctx = _their_own_group_only()
+    asyncio.run(gh.on_my_chat_member(_promotion(chat_id=-100666), ctx))
+    assert gh.is_monitored(-100666)          # they got it watched...
+    assert not gh.is_approved(-100666)       # ...but that grants nothing
+
+    update, reply = _dm(None, user=_user(uid=902))
+    asyncio.run(gh.start_onboarding(update, ctx))
+
+    # Refused, and left with no row that a later poll would act on.
+    assert "can't find you" in reply.await_args.args[0].lower()
+    assert asyncio.run(gdb.get_user(902)) is None
+    ctx.bot.create_chat_invite_link.assert_not_awaited()
+
+
+def test_approving_that_same_group_then_admits_them(live):
+    """The other half: once an admin vouches for it, membership counts."""
+    ctx = _their_own_group_only()
+    asyncio.run(gh.on_my_chat_member(_promotion(chat_id=-100666), ctx))
+
+    admin_update, _ = _group_cmd(chat_id=-100666, title="Cohort 2026")
+    asyncio.run(gh.announce_command(admin_update, ctx))
+    assert gh.is_approved(-100666)
+
+    update, _ = _dm(None, user=_user(uid=902))
+    asyncio.run(gh.start_onboarding(update, ctx))
+
+    assert asyncio.run(gdb.get_user(902))["status"] == "awaiting_form"
 
 
 def test_merely_being_added_does_not_start_watching(live):

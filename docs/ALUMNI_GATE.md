@@ -71,18 +71,10 @@ keeps naming them until they actually register. Neither outcome is posted in the
 group; being corrected in front of everyone would be worse than the problem.
 
 It re-posts every `GATE_ANNOUNCE_INTERVAL_DAYS` (default 5), deleting the previous
-one so exactly one is live. A brand-new group has no recorded timestamp, so the
-hourly job treats it as due and announces within the hour of the bot being
-promoted — no command required.
+one so exactly one is live. It only ever posts in **approved** groups.
 
-`/gate_announce` skips that wait, and **the group's own admins can run it**, not
-just the bot's. A leader who has just added the bot needs to see that it worked;
-an hour of nothing looks identical to a broken setup. Requiring `ADMIN_IDS` here
-would have put a Render env var edit and a restart between every new group and its
-first announcement, which is exactly what auto-watch exists to avoid. Group admins
-are confined to their own group — the fan-out to every watched group stays with
-bot admins, since the fallback would otherwise turn one mistyped command into a
-cross-group broadcast.
+`/gate_announce` skips the wait, and is **admins-only, because running it inside a
+group is what approves that group** — see below.
 
 The re-post job ticks hourly but only acts where the stored timestamp says a group
 is due, so restarting the bot can't spam a fresh announcement and the cadence
@@ -145,12 +137,50 @@ reviews it, and with no `GATE_AIRTABLE_DONE_FIELD` set, a row existing *is* the
 pass. So without an eligibility check a stranger reaches a working invite link
 with no human involved at any point.
 
-The check is **membership in at least one watched group**, asked once at the
+The check is **membership in at least one APPROVED group**, asked once at the
 single door into onboarding (`start_onboarding`). That is the same question the
 gate exists to answer: it moves people from the community groups into the alumni
 group, so being in one of those groups is what makes someone a candidate. Later
 steps aren't re-checked because the statuses they read can only be reached
 through this one.
+
+### Approved, not merely watched
+
+This distinction is the security model, and collapsing the two is a full bypass.
+
+Auto-watch enrols any group whose owner promotes the bot. That is a fine signal
+for *"this group exists and I can work in it"* and a worthless one for *"the
+people here are Freshman people"* — *anyone* can create a group, add this bot and
+promote it. If eligibility read the watched set, the attack is four steps with no
+human anywhere in it:
+
+1. make a group, add the bot, promote it → auto-watch enrols it;
+2. open the bot: eligibility finds them in "a watched group" → passes;
+3. fill in the form — it's public, and submitting it proves nothing;
+4. send fifty words → a single-use invite link to the alumni group.
+
+So the watched set is split in two. `approved` is set only by a **bot admin
+acting inside a group** — `/gate_announce` there, `/gate_watch` there, or the
+`GATE_MONITORED_GROUP_IDS` seed, which requires editing the deployment's
+environment. Auto-watch never sets it.
+
+**Approval gates everything, not just eligibility.** An unapproved group gets no
+announcement, no detection, no roundup. Announcing in one would invite its members
+to tap Join and then refuse them as ineligible, which is worse than silence — and
+in a group a stranger set up, it would be the bot advertising itself somewhere
+nobody asked for it. Watching an unapproved group buys exactly one thing: it
+appears in `/gate_groups` so an admin can approve it without hunting for a chat ID.
+
+**Why approval rides on `/gate_announce` rather than its own command.** There is
+then no separate step to forget: the command an admin was already going to run to
+switch a group on is the one that approves it, so an announced-but-unapproved
+group and an approved-but-unannounced one are both unrepresentable. Approval
+happens *before* the post, because the announcement invites people to tap Join and
+eligibility reads the approved set — the other order leaves a window where the
+fastest tapper is refused by the group they're standing in.
+
+A DM `/gate_announce` approves nothing: approving means vouching for a specific
+group, and a DM carries none.
 
 Being *detected* is deliberately not required — someone can legitimately open the
 bot before a join, post or tap has surfaced them.
@@ -204,13 +234,14 @@ full name captured from the Airtable submission is kept on the roster.
 ## Commands
 
 - `/alumni` or the **🎓 Join the Alumni Group** menu button — begin onboarding
-- `/gate_watch` — (admins, in a group) start watching that group. Only needed if
-  auto-watch is off, or the bot was already an admin before this shipped
-- `/gate_unwatch` — (admins, in a group) stop watching it
-- `/gate_groups` — (admins) list the watched groups and the destination
-- `/gate_announce` — post/re-post the pinned announcement. **Any admin of the
-  group it's run in** may use it, in that group only; bot admins may also run it
-  in a DM to hit every watched group at once. See `_announce_targets`
+- `/gate_watch` — (admins, in a group) watch **and approve** that group. Only
+  needed if auto-watch is off, the bot was already an admin before this shipped,
+  or you're re-enabling a group after `/gate_unwatch`
+- `/gate_unwatch` — (admins, in a group) stop watching it, and drop its approval
+- `/gate_groups` — (admins) approved groups, then any waiting for approval
+- `/gate_announce` — **(admins only)** post/re-post the pinned announcement. Run
+  inside a group it also **approves** that group; run in a DM it re-posts to every
+  already-approved group and approves nothing. See `_announce_targets`
 - `/gate_stats` — (admins) counts per status
 - `/gate_list` — (admins) the roster of everyone admitted through the gate
 
@@ -224,17 +255,20 @@ Two different things, easily confused:
   the destination. These change often, so they are **not** configuration: they
   live in the database and are managed live. No restart, no config edit.
 
-  **Making the bot an admin in a group is enough to start watching it.** The gate
-  can't work without admin rights anyway — they're what deliver join events and,
-  with privacy mode off, messages — so granting them is already a deliberate act
-  by someone who runs that group, which makes a good opt-in on its own. Admins get
-  a DM naming the group, so an unintended one can be undone with `/gate_unwatch`.
-  Being removed from a group stops watching it. Set `GATE_AUTO_WATCH=false` to
-  require an explicit `/gate_watch` everywhere instead.
+  **Making the bot an admin in a group starts watching it — and nothing more.**
+  The gate can't work without admin rights anyway (they're what deliver join
+  events and, with privacy mode off, messages), so granting them is a fine signal
+  that the bot *may* work there. It is not a signal about the people in the group,
+  because the person granting them can be anyone at all. So auto-watch leaves the
+  group **pending**: it is inert until an admin runs `/gate_announce` inside it.
+  Admins get a DM naming the group with that instruction, and `/gate_unwatch`
+  forgets an unrecognised one. Being removed from a group stops watching it. Set
+  `GATE_AUTO_WATCH=false` to require an explicit `/gate_watch` everywhere instead.
 
 `GATE_MONITORED_GROUP_IDS` still exists as a one-time bootstrap — anything listed
-there is copied into the database at startup. Removing an id from it does not
-unwatch the group; use `/gate_unwatch`.
+there is copied into the database at startup, **approved**, since editing a
+deployment's environment takes the same authority the approval commands check
+for. Removing an id from it does not unwatch the group; use `/gate_unwatch`.
 
 Watching the destination group is refused: it would nudge people about a group
 they are already in.
@@ -252,12 +286,13 @@ detection does nothing, and no jobs are scheduled.
 3. **Privacy mode off** via BotFather `/setprivacy` → Disable, so the bot can see
    ordinary messages for the "first time they post" trigger.
 4. Airtable block filled in and verified with `scripts/check_airtable.py`.
-5. `GATE_GROUP_ID` set and `GATE_LIVE=true`. Groups the bot is already an admin
-   in need one `/gate_watch` each; from then on, promoting it in a new group is
-   enough.
-6. Restart, then **tap the announcement button yourself first.**
+5. `GATE_GROUP_ID` set and `GATE_LIVE=true`.
+6. Restart, then **run `/gate_announce` inside each real community group.** This
+   is what approves them; until then the gate does nothing anywhere and every
+   applicant is refused. Check nothing unexpected is queued with `/gate_groups`.
+7. **Tap the announcement button yourself first.**
 
-Step 6 matters. Membership checks **fail closed**: if the bot can't read the
+Step 7 matters. Membership checks **fail closed**: if the bot can't read the
 alumni group, everyone is treated as a non-member. That's harmless when one person
 trickles in by posting; when 200 people tap a pinned message it marks all of them
 `nudged`, and the next roundup names them in the group. Verify with your own tap

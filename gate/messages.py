@@ -236,11 +236,26 @@ WATCH_ADDED = (
     "<code>/gate_announce</code> to post the join message."
 )
 AUTO_WATCHED = (
-    "👀 I was made an admin in <b>{title}</b>, so I've started watching it.\n"
+    "👀 I was made an admin in <b>{title}</b>.\n"
     "<code>{chat_id}</code>\n\n"
-    "People here will be checked against the Alumni group. Run "
-    "<code>/gate_announce</code> in it to post the join message, or "
-    "<code>/gate_unwatch</code> there if this wasn't intended."
+    "⚠️ <b>It isn't switched on.</b> I'm doing nothing there — no announcement, no "
+    "checks — because anyone can add me to a group and promote me, so this on its "
+    "own doesn't tell me these are our people.\n\n"
+    "If it's a real Freshman group, run <code>/gate_announce</code> <b>inside it</b>. "
+    "That posts the join message and approves it, so being a member there counts "
+    "towards joining the Alumni group.\n\n"
+    "If you don't recognise it, do nothing — or <code>/gate_unwatch</code> there to "
+    "forget it entirely."
+)
+
+# Confirms the approval, not just the post — this is the moment a group starts
+# counting towards eligibility, so it should be impossible to do by accident and
+# not notice.
+ANNOUNCE_APPROVED = (
+    "✅ <b>{title}</b> is now approved.\n\n"
+    "The announcement is posted and pinned, and being a member here now counts "
+    "towards joining the Alumni group. Undo with <code>/gate_unwatch</code> in "
+    "that group."
 )
 
 WATCH_ALREADY = "👀 Already watching <b>{title}</b> — nothing to change."
@@ -256,8 +271,18 @@ GROUPS_EMPTY = (
     "Not watching any groups yet. Add me to one as an admin and run "
     "<code>/gate_watch</code> there."
 )
-GROUPS_HEADER = "👀 <b>Watching {count} group(s)</b>\n\nDestination: <code>{destination}</code>"
+GROUPS_HEADER = (
+    "✅ <b>{count} approved group(s)</b>\n\nDestination: <code>{destination}</code>"
+)
 GROUPS_ENTRY = "• {title} — <code>{chat_id}</code>"
+GROUPS_NONE_APPROVED = (
+    "<i>None yet — run /gate_announce inside a group to approve it.</i>"
+)
+GROUPS_PENDING_HEADER = (
+    "⏳ <b>{count} waiting for approval</b>\n"
+    "<i>I was added and promoted here, but I'm doing nothing until an admin runs "
+    "/gate_announce inside. Don't recognise one? /gate_unwatch there.</i>"
+)
 
 ANNOUNCE_DORMANT = (
     "⚙️ The gate is dormant. Set <code>GATE_LIVE=true</code> (and "

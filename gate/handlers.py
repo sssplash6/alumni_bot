@@ -77,40 +77,66 @@ _ANNOUNCE_TICK_SECONDS = 3600
 _FOLLOWUP_BATCH = 8
 _FOLLOWUP_BATCH_PAUSE = 4.0
 
-# Which groups are being watched. Held in memory because it's consulted on every
-# group message, and refreshed whenever it changes — safe because exactly one
-# instance of this bot may run at a time (two would fight over getUpdates anyway).
+# Which groups are known, and which of those are approved. Held in memory because
+# they're consulted on every group message, and refreshed whenever they change —
+# safe because exactly one instance of this bot may run at a time (two would fight
+# over getUpdates anyway).
+#
+# WATCHED means the bot has seen itself promoted there. It is not a trust signal:
+# anyone can create a group, add this bot and promote it, so a watched group
+# proves nothing about anyone in it.
+#
+# APPROVED means a bot admin ran /gate_announce (or /gate_watch) inside it. That
+# is the trust signal, and it is the only one eligibility reads. Watching an
+# unapproved group buys exactly one thing: it shows up in /gate_groups so an admin
+# can approve it without hunting for a chat ID.
 _monitored: set[int] = set()
+_approved: set[int] = set()
 
 
 def monitored_ids() -> set[int]:
-    """The groups currently being watched."""
+    """Every group being watched, approved or not."""
     return set(_monitored)
+
+
+def approved_ids() -> set[int]:
+    """The groups a bot admin has blessed — the only ones the gate acts in."""
+    return set(_approved)
 
 
 def is_monitored(chat_id: int | None) -> bool:
     return chat_id is not None and chat_id in _monitored
 
 
+def is_approved(chat_id: int | None) -> bool:
+    return chat_id is not None and chat_id in _approved
+
+
 async def refresh_monitored() -> set[int]:
-    """Reload the watched-group cache from the database."""
-    global _monitored
-    _monitored = {row["chat_id"] for row in await db.monitored_chats()}
+    """Reload the watched- and approved-group caches from the database."""
+    global _monitored, _approved
+    rows = await db.monitored_chats()
+    _monitored = {row["chat_id"] for row in rows}
+    _approved = {row["chat_id"] for row in rows if row.get("approved")}
     return set(_monitored)
 
 
 async def load_monitored(seed: list[int] | None = None) -> set[int]:
-    """Prime the cache at startup, seeding from GATE_MONITORED_GROUP_IDS.
+    """Prime the caches at startup, seeding from GATE_MONITORED_GROUP_IDS.
 
     The environment variable is a bootstrap only: anything listed there is copied
     into the database once, after which the group list is managed live with
-    /gate_watch and /gate_unwatch. Removing an id from the variable does not
-    unwatch it — use /gate_unwatch.
+    /gate_announce, /gate_watch and /gate_unwatch. Removing an id from the
+    variable does not unwatch it — use /gate_unwatch.
+
+    Seeded groups arrive **approved**: editing a deployment's environment is
+    something only whoever runs the bot can do, which is the same authority the
+    approval commands check for.
     """
     for chat_id in settings.MONITORED_GROUP_IDS if seed is None else seed:
         if chat_id == settings.GROUP_ID:
             continue  # never watch the destination group
-        await db.add_monitored_chat(chat_id, None)
+        await db.add_monitored_chat(chat_id, None, approved=True)
     return await refresh_monitored()
 
 
@@ -168,10 +194,17 @@ async def _is_member(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
     return member.status in _PRESENT_STATUSES
 
 
-async def _in_a_watched_group(
+async def _in_an_approved_group(
     context: ContextTypes.DEFAULT_TYPE, user_id: int
 ) -> bool | None:
-    """Whether this person is in at least one watched group.
+    """Whether this person is in at least one APPROVED group.
+
+    Approved, not merely watched, and that distinction is the whole security
+    model. Membership in a watched group is self-granting: anyone can make a
+    group, add this bot, promote it, and auto-watch enrols them — so if this read
+    the watched set, a stranger could manufacture their own eligibility and walk
+    the rest of onboarding unaided, since the form behind it is public and
+    unverified. Only a bot admin acting inside a group can approve it.
 
     ``True``  — found in one; stops at the first hit, so the usual cost is one call.
     ``False`` — at least one group gave a real answer and none of them had them.
@@ -184,14 +217,14 @@ async def _in_a_watched_group(
     retry. Only BadRequest counts as an answer; Forbidden (bot no longer admin
     there) and network errors do not, since both are our problem, not theirs.
     """
-    chat_ids = sorted(monitored_ids())
+    chat_ids = sorted(approved_ids())
     if not chat_ids:
         # Refusing everyone is the safe direction, but it means the gate is
         # unusable, so say why rather than letting it look like rejection.
         logger.error(
-            "Eligibility check can't run: no watched groups. Seed "
-            "GATE_MONITORED_GROUP_IDS or run /gate_watch, or set "
-            "GATE_REQUIRE_WATCHED_GROUP=false to admit anyone who asks."
+            "Eligibility check can't run: no APPROVED groups. Run /gate_announce "
+            "in each community group as an admin, seed GATE_MONITORED_GROUP_IDS, "
+            "or set GATE_REQUIRE_WATCHED_GROUP=false to admit anyone who asks."
         )
         return None
 
@@ -347,7 +380,7 @@ async def on_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await db.mark_member(user.id, user.username, user.first_name)
         return
 
-    if is_monitored(chat_id):
+    if is_approved(chat_id):
         await _process_user(context, chat_id, user)
 
 
@@ -387,10 +420,15 @@ async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if is_monitored(chat.id):
         return
 
-    await db.add_monitored_chat(chat.id, chat.title)
+    # Watched, NOT approved. Whoever promoted the bot is whoever created the group,
+    # which anyone can be — so this records that the group exists and nothing more.
+    # Until an admin runs /gate_announce in it, the gate does nothing there.
+    await db.add_monitored_chat(chat.id, chat.title, approved=False)
     await refresh_monitored()
-    logger.info("Promoted to admin in chat %d (%s) — now watching it",
-                chat.id, chat.title)
+    logger.info(
+        "Promoted to admin in chat %d (%s) — watching it, pending approval",
+        chat.id, chat.title,
+    )
 
     for admin_id in ADMIN_IDS:
         try:
@@ -406,9 +444,9 @@ async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 
 async def on_group_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """First-time posters in a monitored group get checked."""
+    """First-time posters in an approved group get checked."""
     chat = update.effective_chat
-    if chat is None or not is_monitored(chat.id):
+    if chat is None or not is_approved(chat.id):
         return
     await _process_user(context, chat.id, update.effective_user)
 
@@ -482,10 +520,16 @@ async def post_announcement(context: ContextTypes.DEFAULT_TYPE, chat_id: int) ->
 
 
 async def announce_job(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Re-post the announcement in any monitored group that's due one."""
+    """Re-post the announcement in any approved group that's due one.
+
+    Unapproved groups are skipped entirely. Announcing in one would invite its
+    members to tap Join and then refuse them as ineligible, which is worse than
+    staying quiet — and in a group a stranger set up, it would be the bot
+    advertising itself somewhere nobody asked for it.
+    """
     if not settings.active():
         return
-    for chat_id in sorted(monitored_ids()):
+    for chat_id in sorted(approved_ids()):
         if _announcement_due(await db.get_announcement(chat_id)):
             await post_announcement(context, chat_id)
 
@@ -511,7 +555,7 @@ async def followup_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         - timedelta(days=settings.ANNOUNCE_INTERVAL_DAYS)
     ).isoformat()
 
-    for chat_id in sorted(monitored_ids()):
+    for chat_id in sorted(approved_ids()):
         stale = await db.stale_nudged_users(cutoff, chat_id)
         if not stale:
             continue
@@ -624,7 +668,7 @@ async def on_already_tap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         user.id, user.username,
     )
     chat = update.effective_chat
-    if chat is not None and is_monitored(chat.id):
+    if chat is not None and is_approved(chat.id):
         await db.mark_nudged(user.id, user.username, user.first_name, chat.id)
 
     # The popup below disappears as soon as they dismiss it, so follow it with a
@@ -689,14 +733,14 @@ async def start_onboarding(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     # Checked here, at the single door into onboarding, rather than at each later
     # step — the statuses those steps read can only be reached through this one.
     if settings.REQUIRE_WATCHED_GROUP:
-        eligible = await _in_a_watched_group(context, user.id)
+        eligible = await _in_an_approved_group(context, user.id)
         if eligible is None:
             await message.reply_text(msg.ELIGIBILITY_UNAVAILABLE, parse_mode="HTML")
             return
         if not eligible:
             logger.info(
-                "Refused onboarding for user %d (@%s): in none of the %d watched "
-                "groups", user.id, user.username, len(monitored_ids()),
+                "Refused onboarding for user %d (@%s): in none of the %d approved "
+                "groups", user.id, user.username, len(approved_ids()),
             )
             await message.reply_text(msg.NOT_IN_ANY_GROUP, parse_mode="HTML")
             return
@@ -996,8 +1040,13 @@ async def watch_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
         return
 
+    # Approves as well as watches: this is a bot admin naming a specific group,
+    # the same gesture /gate_announce makes. It exists for groups auto-watch can't
+    # reach — the bot was already an admin before this shipped, so no promotion
+    # event will ever fire — and for switching a group back on after /gate_unwatch.
     title = chat.title or str(chat.id)
     added = await db.add_monitored_chat(chat.id, chat.title)
+    await db.approve_monitored_chat(chat.id, chat.title)
     await refresh_monitored()
 
     template = msg.WATCH_ADDED if added else msg.WATCH_ALREADY
@@ -1033,98 +1082,96 @@ async def unwatch_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def groups_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """List the watched groups and the destination (admins only, DM)."""
+    """List the watched groups and the destination (admins only, DM).
+
+    Approved and pending are listed separately: pending ones are the queue of
+    groups someone has added the bot to, and this is where an admin notices a
+    group they don't recognise sitting there.
+    """
     if not _is_admin(update.effective_user.id):
         return
     chats = await db.monitored_chats()
     if not chats:
         await update.message.reply_text(msg.GROUPS_EMPTY, parse_mode="HTML")
         return
+
+    approved = [row for row in chats if row.get("approved")]
+    pending = [row for row in chats if not row.get("approved")]
+
     lines = [
         msg.GROUPS_HEADER.format(
-            count=len(chats), destination=settings.GROUP_ID or "not set"
+            count=len(approved), destination=settings.GROUP_ID or "not set"
         ),
         "",
     ]
-    for row in chats:
-        lines.append(msg.GROUPS_ENTRY.format(
-            title=html.escape(row["title"] or "—"), chat_id=row["chat_id"]
-        ))
-    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
-
-
-async def _is_group_admin(
-    context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int
-) -> bool:
-    """True if this person runs *this* group (its creator or an administrator).
-
-    Fails closed: if the status can't be read we don't know, and an unknown
-    answer must not grant anything.
-    """
-    try:
-        member = await context.bot.get_chat_member(chat_id, user_id)
-    except Exception:
-        logger.debug(
-            "Could not read group-admin status for user %d in chat %d",
-            user_id, chat_id,
+    for row in approved or [None]:
+        lines.append(
+            msg.GROUPS_ENTRY.format(
+                title=html.escape(row["title"] or "—"), chat_id=row["chat_id"]
+            ) if row else msg.GROUPS_NONE_APPROVED
         )
-        return False
-    return member.status in ("creator", "administrator")
+    if pending:
+        lines += ["", msg.GROUPS_PENDING_HEADER.format(count=len(pending))]
+        for row in pending:
+            lines.append(msg.GROUPS_ENTRY.format(
+                title=html.escape(row["title"] or "—"), chat_id=row["chat_id"]
+            ))
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
 
 async def _announce_targets(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> list[int] | None:
-    """Which groups this person may announce into. None means "not allowed".
+    """Which groups to announce into. None means "not allowed".
 
-    A **bot admin** gets the full behaviour: inside a monitored group, that group;
-    anywhere else, every monitored group at once.
+    Bot admins only. This command is the approval gesture (see announce_command),
+    so widening it would hand out the power it exists to withhold.
 
-    A **group leader** — someone who merely runs the group — gets exactly their own
-    group, and only if it's already being watched. They had to add and promote the
-    bot to get this far and they can remove it again, so letting them post the
-    announcement there grants nothing they didn't already have. It also means
-    setting a group up needs no entry on the bot's admin list, which is the whole
-    point of auto-watch.
-
-    The fan-out to every monitored group stays with bot admins. Someone who runs
-    one group has no business announcing in the others, and the fallback in the
-    branch above would otherwise turn "ran it in the wrong chat" into a broadcast.
+    Run **inside a group**: that group, which is also how it gets approved. Run in
+    a **DM**: every already-approved group. A DM can't approve anything — approving
+    means vouching for a specific group, and there is nothing to vouch for when
+    the command carries no group with it.
     """
     chat = update.effective_chat
     user = update.effective_user
-    if chat is None or user is None:
+    if chat is None or user is None or not _is_admin(user.id):
         return None
 
-    if _is_admin(user.id):
-        return [chat.id] if is_monitored(chat.id) else sorted(monitored_ids())
-
-    if (
-        chat.type in ("group", "supergroup")
-        and is_monitored(chat.id)
-        and await _is_group_admin(context, chat.id, user.id)
-    ):
+    if chat.type in ("group", "supergroup"):
+        if chat.id == settings.GROUP_ID:
+            return None  # the destination, not a community group
         return [chat.id]
 
-    return None
+    return sorted(approved_ids())
 
 
 async def announce_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Post the announcement now, without waiting for the cycle.
+    """Post the announcement now — and, in a group, approve that group.
 
-    The re-post job would get to a newly watched group within the hour anyway, but
-    a leader who has just added the bot needs to see that it worked — an hour of
-    nothing happening is indistinguishable from a broken setup, and that's the
-    message we'd get instead.
+    **This is the approval gesture, and it is admins-only for that reason.**
+    Auto-watch enrols any group whose owner promotes the bot, which is fine for
+    knowing a group exists but cannot be a statement about the people in it —
+    anyone can make a group and promote a bot. Running this inside a group is a
+    named person with the bot's admin rights saying "these are our people", which
+    is what makes membership there count towards eligibility.
 
-    Unlike the job this ignores the re-post interval, since someone asking for it
-    is the whole point. See _announce_targets for who may run it where.
+    Folding approval into the announcement means there is no separate approve
+    step to forget: the command an admin runs to switch a group on is the one that
+    was already going to be run, and it is impossible to have an announced group
+    that isn't approved or an approved group nobody announced in.
+
+    Unlike the job this ignores the re-post interval, since an admin asking for it
+    is the whole point.
     """
     targets = await _announce_targets(update, context)
     if targets is None:
         # Stay silent rather than refusing: a refusal tells every member the
         # command exists.
         return
+
+    chat = update.effective_chat
+    approving = chat is not None and chat.type in ("group", "supergroup")
+    newly = False
 
     if not settings.active():
         await _reply_privately(update, context, msg.ANNOUNCE_DORMANT, parse_mode="HTML")
@@ -1136,15 +1183,32 @@ async def announce_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
         return
 
+    if approving:
+        # Approve BEFORE posting. The announcement invites people to tap Join, and
+        # eligibility reads the approved set — approving afterwards would leave a
+        # window where the fastest tapper is refused by the group they're in.
+        newly = await db.approve_monitored_chat(targets[0], chat.title)
+        await refresh_monitored()
+        if newly:
+            logger.info(
+                "Chat %d (%s) approved for eligibility by admin %d",
+                targets[0], chat.title, update.effective_user.id,
+            )
+
     posted = 0
     for chat_id in targets:
         if await post_announcement(context, chat_id):
             posted += 1
 
+    template = msg.ANNOUNCE_APPROVED if approving and newly else msg.ANNOUNCE_DONE
     await _reply_privately(
         update,
         context,
-        msg.ANNOUNCE_DONE.format(ok=posted, total=len(targets)),
+        template.format(
+            ok=posted,
+            total=len(targets),
+            title=html.escape(chat.title or str(targets[0])) if approving else "",
+        ),
         parse_mode="HTML",
     )
 

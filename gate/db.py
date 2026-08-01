@@ -71,13 +71,32 @@ async def init_schema() -> None:
         # The groups being watched. In the database rather than the environment
         # because these change often — new community groups get added all the
         # time, and that shouldn't need a config edit and a restart.
+        #
+        # ``approved`` is the security boundary. Being watched only means the
+        # group is KNOWN — anyone at all can put the bot in a group and promote
+        # it, so a watched group proves nothing about anybody. Approval is set by
+        # a bot admin acting inside the group, and it is what makes membership
+        # there count as being a Freshman person. See gate/handlers.py.
         await db.execute("""
             CREATE TABLE IF NOT EXISTS gate_monitored_chats (
                 chat_id  INTEGER PRIMARY KEY,
                 title    TEXT,
-                added_at TEXT NOT NULL
+                added_at TEXT NOT NULL,
+                approved INTEGER NOT NULL DEFAULT 0
             )
         """)
+        # Added after the first release. Rows predating the column were all put
+        # there by a config edit or an admin command — auto-watch could not yet
+        # grant anything — so grandfathering them as approved preserves exactly
+        # the behaviour they already had.
+        try:
+            await db.execute(
+                "ALTER TABLE gate_monitored_chats "
+                "ADD COLUMN approved INTEGER NOT NULL DEFAULT 0"
+            )
+            await db.execute("UPDATE gate_monitored_chats SET approved = 1")
+        except aiosqlite.OperationalError:
+            pass
         await db.commit()
 
 
@@ -232,8 +251,14 @@ async def awaiting_form_users() -> list[dict]:
 
 # ── Monitored groups ────────────────────────────────────────────────────────────
 
-async def add_monitored_chat(chat_id: int, title: str | None) -> bool:
-    """Start watching a group. False if it was already being watched."""
+async def add_monitored_chat(
+    chat_id: int, title: str | None, approved: bool = False
+) -> bool:
+    """Start watching a group. False if it was already being watched.
+
+    ``approved`` only ever moves up. A group blessed by an admin must not be
+    silently demoted by a later auto-watch touching the same row.
+    """
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(
             "SELECT 1 FROM gate_monitored_chats WHERE chat_id = ?", (chat_id,)
@@ -241,15 +266,42 @@ async def add_monitored_chat(chat_id: int, title: str | None) -> bool:
         existed = await cur.fetchone() is not None
         await db.execute(
             """
-            INSERT INTO gate_monitored_chats (chat_id, title, added_at)
-            VALUES (?, ?, ?)
+            INSERT INTO gate_monitored_chats (chat_id, title, added_at, approved)
+            VALUES (?, ?, ?, ?)
             ON CONFLICT(chat_id) DO UPDATE SET
-                title = COALESCE(excluded.title, gate_monitored_chats.title)
+                title    = COALESCE(excluded.title, gate_monitored_chats.title),
+                approved = MAX(excluded.approved, gate_monitored_chats.approved)
+            """,
+            (chat_id, title, _now(), int(approved)),
+        )
+        await db.commit()
+        return not existed
+
+
+async def approve_monitored_chat(chat_id: int, title: str | None = None) -> bool:
+    """Bless a group so membership in it counts towards eligibility.
+
+    Watches it first if it wasn't already, so an admin never has to run two
+    commands. Returns True if this actually changed anything.
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "SELECT approved FROM gate_monitored_chats WHERE chat_id = ?", (chat_id,)
+        )
+        row = await cur.fetchone()
+        already = row is not None and row[0] == 1
+        await db.execute(
+            """
+            INSERT INTO gate_monitored_chats (chat_id, title, added_at, approved)
+            VALUES (?, ?, ?, 1)
+            ON CONFLICT(chat_id) DO UPDATE SET
+                title    = COALESCE(excluded.title, gate_monitored_chats.title),
+                approved = 1
             """,
             (chat_id, title, _now()),
         )
         await db.commit()
-        return not existed
+        return not already
 
 
 async def remove_monitored_chat(chat_id: int) -> bool:
@@ -263,7 +315,7 @@ async def remove_monitored_chat(chat_id: int) -> bool:
 
 
 async def monitored_chats() -> list[dict]:
-    """Every group currently being watched."""
+    """Every group currently being watched, approved or not."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
