@@ -68,6 +68,8 @@ CHECK_FORM_CB = "gate:check_form"
 JOIN_CB = "gate:join"
 ALREADY_CB = "gate:already"
 ENTER_CB = "start:alumnigate"
+INTRO_YES_CB = "gate:intro_yes"
+INTRO_NO_CB = "gate:intro_no"
 
 # The announcement job wakes up far more often than the re-post interval and lets
 # the recorded timestamp decide whether a group is due, so the cadence holds even
@@ -475,27 +477,9 @@ async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 
 async def on_group_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """First-time posters in an approved group get checked.
-
-    The alumni group is never approved — it's the destination — but it is the one
-    other chat worth listening to, because a newcomer posting there is how we know
-    they introduced themselves.
-    """
+    """First-time posters in an approved group get checked."""
     chat = update.effective_chat
-    if chat is None:
-        return
-
-    if settings.GROUP_ID != 0 and chat.id == settings.GROUP_ID:
-        user = update.effective_user
-        if user is not None and not user.is_bot:
-            # Any message counts, not just one long enough to be the intro. The
-            # reminder exists to catch people who joined and went silent, and
-            # nagging someone who is visibly taking part about the word count of
-            # their introduction is the bot being a pedant.
-            await db.mark_intro_posted(user.id)
-        return
-
-    if not is_approved(chat.id):
+    if chat is None or not is_approved(chat.id):
         return
     await _process_user(context, chat.id, update.effective_user)
 
@@ -650,16 +634,28 @@ async def followup_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                 await asyncio.sleep(_FOLLOWUP_BATCH_PAUSE)
 
 
-async def intro_reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Privately chase anyone who joined the alumni group and never said anything.
+def _intro_markup() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton(msg.INTRO_YES_BUTTON, callback_data=INTRO_YES_CB),
+        InlineKeyboardButton(msg.INTRO_NO_BUTTON, callback_data=INTRO_NO_CB),
+    ]])
 
-    The last thing onboarding asks for is that they re-post their intro in the
-    group, and it's the step with nothing enforcing it — they already have the
-    invite link by then, so there's no lever left and none is wanted. This is one
-    quiet reminder, in their DMs, and then we leave them alone.
 
-    Nothing is posted in the group: an unanswered public "where's your intro?"
-    would be the worst possible welcome.
+async def intro_check_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """A few hours after joining, privately ask whether they've introduced
+    themselves yet.
+
+    Re-posting the intro in the group is the last thing onboarding asks for and
+    the only step with nothing behind it — they already hold the invite link by
+    then, so there is no lever left and none is wanted.
+
+    Asked rather than detected. Reading the group to work it out would mean the
+    bot silently depending on privacy mode staying off, and would call anyone who
+    posted while the bot was restarting a no-show. Asking costs one tap, is right
+    every time, and the answer is more useful than an inference.
+
+    One question per person, ever. Nothing is posted in the group: an unanswered
+    public "where's your intro?" would be the worst possible welcome.
     """
     if not settings.active() or settings.INTRO_REMINDER_HOURS <= 0:
         return
@@ -673,21 +669,51 @@ async def intro_reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         try:
             await context.bot.send_message(
                 chat_id=row["user_id"],
-                text=msg.INTRO_REMINDER,
+                text=msg.INTRO_CHECK,
                 parse_mode="HTML",
+                reply_markup=_intro_markup(),
                 disable_web_page_preview=True,
             )
-            logger.info("Reminded user %d to post their intro", row["user_id"])
+            logger.info("Asked user %d whether they've posted their intro",
+                        row["user_id"])
         except Exception:
             # Almost certainly someone who joined by other means and never
             # started the bot. It will not become deliverable later.
-            logger.debug(
-                "Could not send the intro reminder to user %d", row["user_id"]
-            )
+            logger.debug("Could not ask user %d about their intro", row["user_id"])
 
-        # Marked either way. A reminder we couldn't deliver is not one to retry
+        # Marked either way. A question we couldn't deliver is not one to retry
         # forever, and the alternative is this row coming back every tick.
         await db.mark_intro_reminded(row["user_id"])
+
+
+async def on_intro_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Their answer to that question.
+
+    "Yes" is taken at face value, unlike the announcement's "I'm already in it".
+    That one is checked because a wrong answer wrongly excludes someone from the
+    group forever; this one costs a reminder nobody needed, and calling a member
+    a liar over it would be a strange way to welcome them.
+    """
+    query = update.callback_query
+    user = update.effective_user
+    posted = query.data == INTRO_YES_CB
+
+    await query.answer()
+    if posted:
+        await db.mark_intro_posted(user.id)
+        logger.info("User %d says they've posted their intro", user.id)
+    else:
+        logger.info("User %d hasn't posted their intro yet", user.id)
+
+    # Drop the buttons so the question can't be answered twice.
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        logger.debug("Could not clear the intro buttons for user %d", user.id)
+
+    await query.message.reply_text(
+        msg.INTRO_THANKS if posted else msg.INTRO_NOT_YET, parse_mode="HTML"
+    )
 
 
 async def on_join_tap(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1532,6 +1558,9 @@ def register(app: Application) -> None:
     app.add_handler(CallbackQueryHandler(on_check_form, pattern=f"^{CHECK_FORM_CB}$"))
     app.add_handler(CallbackQueryHandler(on_join_tap, pattern=f"^{JOIN_CB}$"))
     app.add_handler(CallbackQueryHandler(on_already_tap, pattern=f"^{ALREADY_CB}$"))
+    app.add_handler(
+        CallbackQueryHandler(on_intro_answer, pattern=r"^gate:intro_(yes|no)$")
+    )
 
     app.add_handler(CommandHandler("gate_stats", stats_command, filters=_private))
     app.add_handler(CommandHandler("gate_list", list_command, filters=_private))
@@ -1604,9 +1633,9 @@ def register(app: Application) -> None:
 
     if settings.INTRO_REMINDER_HOURS > 0:
         app.job_queue.run_repeating(
-            intro_reminder_job, interval=_INTRO_TICK_SECONDS, first=300
+            intro_check_job, interval=_INTRO_TICK_SECONDS, first=300
         )
         logger.info(
-            "Intro reminder: newcomers who haven't posted %d h after joining get "
-            "one DM", settings.INTRO_REMINDER_HOURS
+            "Intro check: newcomers are asked whether they've posted %d h after "
+            "joining", settings.INTRO_REMINDER_HOURS
         )

@@ -288,39 +288,41 @@ fallback entirely and require `tg_id`.
 it — the student re-posts the real thing in the alumni group once they're in. Any
 full name captured from the Airtable submission is kept on the roster.
 
-## The intro reminder
+## The intro check
 
 Re-posting the intro in the group is the last thing onboarding asks for and the
 only step with nothing behind it: by then they already hold the invite link, so
-there is no lever left, and none is wanted. Instead the bot checks.
+there is no lever left, and none is wanted.
 
-`GATE_INTRO_REMINDER_HOURS` (default 3) after someone **joins**, if they still
-haven't said anything in the alumni group, they get one private reminder. Then
-they're left alone permanently.
+`GATE_INTRO_REMINDER_HOURS` (default 3) after someone **joins**, the bot DMs them
+a question with two buttons — *Yes, posted it* / *Not yet*. Yes closes it out; not
+yet gets a short "here's how" and closes it out anyway. One question per person,
+ever.
+
+**Asked, not detected.** The bot could watch the alumni group and work it out, and
+that was the first cut, but it's the worse design: it makes the feature silently
+depend on privacy mode staying off, and it calls anyone who posted while the bot
+was restarting a no-show — `main.py` polls with `drop_pending_updates=True`, so
+messages sent during a deploy are gone. Asking costs one tap, is right every time,
+and the answer is worth more than the inference. The bot therefore listens for
+nothing at all in the alumni group.
 
 - **The clock starts at the join event, not at the invite link.** You can't post
   in a group you haven't walked into. `mark_joined_group` is called only from
   `on_chat_member`, since that's the one moment that knows *when* — `mark_member`
   fires whenever we merely discover somebody is in there, which can be months late.
-- **Any message stops it**, not just one long enough to be an intro. The reminder
-  exists to catch people who joined and went silent; nagging someone visibly
-  taking part about the word count of their introduction is the bot being a pedant.
-- **This is the one thing the bot listens for in the alumni group.** That group is
-  never watched or approved — it's the destination — so `on_group_message` has a
-  separate branch for it that records the post and returns, without any of the
-  detection that runs in community groups.
-- **People who predate the gate are never chased.** No join event was ever seen
-  for them, so `joined_group_at` is null and they never enter the query.
+- **"Yes" is taken at face value**, unlike the announcement's *I'm already in it*.
+  That one is verified because a wrong answer excludes someone from the group
+  permanently; this one costs a reminder nobody needed, and calling a member a
+  liar over it is a strange way to welcome them.
+- **People who predate the gate are never asked.** No join event was ever seen for
+  them, so `joined_group_at` is null and they never enter the query.
 - **A failed DM still closes the row out.** Someone added to the group by hand may
   never have started the bot, and that won't change; retrying would mean this row
   coming back every tick forever.
 - **Nothing is posted in the group.** An unanswered public "where's your intro?"
   would be the worst possible welcome — and it would break the two-messages rule
   above.
-
-Note this depends on **privacy mode being off**, since the bot has to see ordinary
-messages in the alumni group to know anyone posted. With it on, nobody is ever
-recorded as having posted and everyone gets the reminder.
 
 ## Commands
 

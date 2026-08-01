@@ -203,17 +203,25 @@ ALREADY_REGISTERED = (
 
 ALREADY_MEMBER = "✅ You're already in the Alumni group — you're all set! 🎉"
 
-# A few hours after joining, if they still haven't said anything in the group.
-# One reminder, in private, then never again — they're already in, so there is
-# nothing to enforce with and nothing worth souring a welcome over.
-INTRO_REMINDER = (
+# Asked a few hours after they join. One question per person, ever — they're
+# already in, so there's nothing to enforce with and nothing worth souring a
+# welcome over.
+INTRO_CHECK = (
     "👋 Welcome to the <b>Freshman Alumni Network</b>!\n\n"
-    "One last thing: it looks like you haven't posted your <b>intro</b> in the "
-    "group yet. It's how people know who you are — and it's what makes the "
-    "network worth being in for everyone else too.\n\n"
-    "Just send the same intro you wrote for me into the group whenever you get a "
-    "minute — you can scroll up and copy it from our chat.\n\n"
-    "<i>Already posted it? Then ignore this — I may simply have missed it.</i>"
+    "Quick one: have you posted your <b>intro</b> in the group yet? It's how "
+    "people know who you are, and it's what makes the network worth being in for "
+    "everyone else too."
+)
+INTRO_YES_BUTTON = "✅ Yes, posted it"
+INTRO_NO_BUTTON = "⏳ Not yet"
+
+INTRO_THANKS = "Perfect — thanks! 🎉 Enjoy the network."
+
+INTRO_NOT_YET = (
+    "No problem! 🙌 Whenever you have a minute, send your intro into the group — "
+    "it's the same one you wrote for me, so you can scroll up in this chat and "
+    "copy it straight across.\n\n"
+    "That's the last thing, and then you're properly in."
 )
 
 LINK_FAILED = (

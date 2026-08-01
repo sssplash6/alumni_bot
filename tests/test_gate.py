@@ -879,11 +879,18 @@ def _joined(uid=777, hours_ago=0):
         asyncio.run(_backdate())
 
 
-def _post_in(chat_id, uid=777, is_bot=False):
-    asyncio.run(gh.on_group_message(SimpleNamespace(
-        effective_chat=SimpleNamespace(id=chat_id, type="supergroup"),
-        effective_user=_user(uid=uid, is_bot=is_bot),
-    ), _ctx()))
+def _answer_intro(uid=777, yes=True):
+    """Tap one of the two buttons on the question."""
+    reply = AsyncMock()
+    query = SimpleNamespace(
+        data=gh.INTRO_YES_CB if yes else gh.INTRO_NO_CB,
+        answer=AsyncMock(),
+        edit_message_reply_markup=AsyncMock(),
+        message=SimpleNamespace(reply_text=reply),
+    )
+    update = SimpleNamespace(callback_query=query, effective_user=_user(uid=uid))
+    asyncio.run(gh.on_intro_answer(update, _ctx()))
+    return query, reply
 
 
 def test_joining_the_alumni_group_starts_the_clock(live):
@@ -899,100 +906,106 @@ def test_joining_the_alumni_group_starts_the_clock(live):
     assert row["joined_group_at"] is not None
 
 
-def test_posting_in_the_alumni_group_stops_the_clock(live):
-    _joined(777)
-
-    _post_in(ALUMNI_GROUP, 777)
-
-    assert asyncio.run(gdb.get_user(777))["intro_posted_at"] is not None
-
-
-def test_someone_silent_for_three_hours_is_reminded(live):
+def test_someone_silent_for_three_hours_is_asked(live):
     _joined(777, hours_ago=4)
     ctx = _ctx()
 
-    asyncio.run(gh.intro_reminder_job(ctx))
+    asyncio.run(gh.intro_check_job(ctx))
 
     kwargs = ctx.bot.send_message.await_args.kwargs
     assert kwargs["chat_id"] == 777
     assert "intro" in kwargs["text"].lower()
+    data = [b.callback_data
+            for row in kwargs["reply_markup"].inline_keyboard for b in row]
+    assert data == [gh.INTRO_YES_CB, gh.INTRO_NO_CB]
     assert asyncio.run(gdb.get_user(777))["intro_reminded_at"] is not None
 
 
-def test_someone_who_posted_is_left_alone(live):
+def test_answering_yes_closes_it_out(live):
     _joined(777, hours_ago=4)
-    _post_in(ALUMNI_GROUP, 777)
-    ctx = _ctx()
+    asyncio.run(gh.intro_check_job(_ctx()))
 
-    asyncio.run(gh.intro_reminder_job(ctx))
+    query, reply = _answer_intro(777, yes=True)
 
-    ctx.bot.send_message.assert_not_awaited()
+    assert asyncio.run(gdb.get_user(777))["intro_posted_at"] is not None
+    assert "thanks" in reply.await_args.args[0].lower()
+    # Buttons removed, so the question can't be answered twice.
+    query.edit_message_reply_markup.assert_awaited_once()
+
+
+def test_answering_not_yet_says_how_to_do_it(live):
+    _joined(777, hours_ago=4)
+    asyncio.run(gh.intro_check_job(_ctx()))
+
+    _, reply = _answer_intro(777, yes=False)
+
+    assert asyncio.run(gdb.get_user(777))["intro_posted_at"] is None
+    assert "copy it" in reply.await_args.args[0].lower()
 
 
 def test_someone_who_only_just_joined_is_left_alone(live):
     _joined(777, hours_ago=1)
     ctx = _ctx()
 
-    asyncio.run(gh.intro_reminder_job(ctx))
+    asyncio.run(gh.intro_check_job(ctx))
 
     ctx.bot.send_message.assert_not_awaited()
 
 
-def test_the_reminder_is_sent_once_and_only_once(live):
+def test_the_question_is_asked_once_and_only_once(live):
+    """Including after 'not yet' — being asked twice about the same thing is
+    nagging, and they're already in the group either way."""
     _joined(777, hours_ago=4)
     ctx = _ctx()
 
-    asyncio.run(gh.intro_reminder_job(ctx))
-    asyncio.run(gh.intro_reminder_job(ctx))
+    asyncio.run(gh.intro_check_job(ctx))
+    _answer_intro(777, yes=False)
+    asyncio.run(gh.intro_check_job(ctx))
 
     assert ctx.bot.send_message.await_count == 1
 
 
-def test_an_undeliverable_reminder_is_not_retried_forever(live):
+def test_an_undeliverable_question_is_not_retried_forever(live):
     """Someone added to the group by hand may never have started the bot. That
     won't change, so a failed send must still close the row out."""
     _joined(777, hours_ago=4)
     ctx = _ctx()
     ctx.bot.send_message = AsyncMock(side_effect=Forbidden("bot can't initiate"))
 
-    asyncio.run(gh.intro_reminder_job(ctx))
+    asyncio.run(gh.intro_check_job(ctx))
 
     assert asyncio.run(gdb.get_user(777))["intro_reminded_at"] is not None
 
 
-def test_people_who_predate_the_gate_are_never_chased(live):
+def test_people_who_predate_the_gate_are_never_asked(live):
     """No join event was ever seen for them, so there is no clock to run — they
-    must not be asked for an intro nobody ever requested."""
+    must not be asked about an intro nobody ever requested of them."""
     asyncio.run(gdb.mark_member(777, "old", "Old"))
     ctx = _ctx()
 
-    asyncio.run(gh.intro_reminder_job(ctx))
+    asyncio.run(gh.intro_check_job(ctx))
 
     ctx.bot.send_message.assert_not_awaited()
 
 
-def test_the_alumni_group_is_still_never_treated_as_watched(live):
-    """Listening there for intros must not turn it into a group we police."""
-    _post_in(ALUMNI_GROUP, 901)
+def test_the_alumni_group_is_never_treated_as_watched(live):
+    """The destination is not a group the gate polices, and nothing about the
+    intro check may change that."""
+    asyncio.run(gh.on_group_message(SimpleNamespace(
+        effective_chat=SimpleNamespace(id=ALUMNI_GROUP, type="supergroup"),
+        effective_user=_user(uid=901),
+    ), _ctx()))
 
     assert asyncio.run(gdb.get_user(901)) is None
     assert not gh.is_approved(ALUMNI_GROUP)
 
 
-def test_bots_posting_in_the_alumni_group_are_ignored(live):
-    _joined(777, hours_ago=4)
-
-    _post_in(ALUMNI_GROUP, 777, is_bot=True)
-
-    assert asyncio.run(gdb.get_user(777))["intro_posted_at"] is None
-
-
-def test_the_reminder_is_off_when_the_delay_is_zero(live):
+def test_the_check_is_off_when_the_delay_is_zero(live):
     _joined(777, hours_ago=4)
     ctx = _ctx()
 
     with patch.object(settings, "INTRO_REMINDER_HOURS", 0):
-        asyncio.run(gh.intro_reminder_job(ctx))
+        asyncio.run(gh.intro_check_job(ctx))
 
     ctx.bot.send_message.assert_not_awaited()
 
