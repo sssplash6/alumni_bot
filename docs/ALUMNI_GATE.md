@@ -222,7 +222,7 @@ Properties worth knowing, in rough order of how much they matter:
   eligibility is re-asked *every* time someone enters onboarding — a one-shot
   bypass would strand anyone who abandoned halfway and came back, and they'd need
   a second code to finish something they already paid for with the first.
-- **They expire.** `GATE_TOKEN_TTL_DAYS`, default 30, 0 to disable. `/gate_revoke`
+- **They expire.** `GATE_TOKEN_TTL_DAYS`, default 3, 0 to disable. `/gate_revoke`
   handles the codes you remember issuing; the TTL handles the rest.
 - **Redemptions are announced to every admin**, so a code being used is visible
   without anyone running a report.

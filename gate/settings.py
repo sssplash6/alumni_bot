@@ -70,11 +70,12 @@ INTRO_MIN_WORDS: int = int(os.environ.get("GATE_INTRO_MIN_WORDS", "50") or "50")
 
 # How long an unredeemed invite token stays usable, in days. 0 = forever.
 #
-# Defaults to a month because these are handed out for a specific person joining
-# now, and a code that still works a year after it was pasted into a chat is a
-# standing key to the alumni group that nobody remembers issuing. /gate_revoke
-# handles the ones you do remember; this handles the rest.
-TOKEN_TTL_DAYS: int = int(os.environ.get("GATE_TOKEN_TTL_DAYS", "30") or "30")
+# Short on purpose. These are issued for a named person joining now, so the
+# window only has to cover them getting the message and opening the bot; anything
+# longer is a standing key to the alumni group sitting in a chat nobody rereads.
+# /gate_revoke handles the codes you remember issuing, this handles the rest, and
+# re-issuing an expired one costs a single command.
+TOKEN_TTL_DAYS: int = int(os.environ.get("GATE_TOKEN_TTL_DAYS", "3") or "3")
 
 # How often (days) to re-post the pinned "check if I'm in the alumni group"
 # announcement — the only way to reach people who were already in a monitored

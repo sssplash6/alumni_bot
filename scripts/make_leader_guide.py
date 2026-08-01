@@ -315,7 +315,7 @@ def build():
             "one-off invite code — it looks like <code>FA-K7M2Q-XR94T</code>. Give it to the "
             "person; they paste it to the bot in a private chat and go through the "
             "same onboarding, skipping the group check. Each code works once and "
-            "expires after 30 days.",
+            "expires after 3 days — ask again if it lapses.",
             body,
         ),
         Spacer(1, 5),
