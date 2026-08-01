@@ -218,10 +218,12 @@ INTRO_NO_BUTTON = "⏳ Not yet"
 INTRO_THANKS = "Perfect — thanks! 🎉 Enjoy the network."
 
 INTRO_NOT_YET = (
-    "No problem! 🙌 Whenever you have a minute, send your intro into the group — "
-    "it's the same one you wrote for me, so you can scroll up in this chat and "
-    "copy it straight across.\n\n"
-    "That's the last thing, and then you're properly in."
+    "No problem! 🙌\n\n"
+    "Make sure to post it soon, <b>so people know who you are and can reach out "
+    "to you</b> — introductions and opportunities in this network start with "
+    "someone recognising your name.\n\n"
+    "It's the same intro you wrote for me: scroll up in this chat, copy it, and "
+    "send it into the group. That's the last thing, and then you're properly in."
 )
 
 LINK_FAILED = (
