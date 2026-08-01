@@ -170,7 +170,12 @@ services:
       # Required by config.py — the process refuses to start without them:
       - key: BOT_TOKEN            # from @BotFather. A real secret.
         sync: false
-      - key: ADMIN_IDS            # comma-separated Telegram user IDs, e.g. "123,456"
+      # Comma-separated Telegram user IDs, e.g. "123,456". Include every group
+      # leader who should be able to switch their own group on with
+      # /gate_announce — that command is the Alumni Gate's trust root. Edited
+      # here, not in .env: .env is gitignored and never reaches Render, so adding
+      # a leader locally does nothing in production. Needs a restart to take.
+      - key: ADMIN_IDS
         sync: false
 
       # ---- Alumni Gate (gate/settings.py) ----------------------------------

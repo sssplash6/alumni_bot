@@ -39,8 +39,14 @@ from reportlab.platypus import (
 )
 
 BOT = "@freshmanalumni_bot"
-CONTACT = "@gapyearingdoesntsuck"
-UPDATED = "31 July 2026"
+UPDATED = "1 August 2026"
+
+# Read from the bot's own config so the guide can't quote a handle the bot has
+# stopped using. Falls back only if .env isn't present (config reads it at import).
+try:
+    from config import ADMIN_CONTACT as CONTACT
+except Exception:  # pragma: no cover - convenience for building without a .env
+    CONTACT = "@gapyearingdoesntsuck"
 
 OUT = Path(__file__).resolve().parent.parent / "docs" / "ALUMNI_BOT_LEADER_GUIDE.pdf"
 
@@ -192,25 +198,26 @@ def build():
         f"<b>Members → Add member → {BOT}</b>",
         "Promote it to <b>Administrator</b>, and turn on the <b>Pin messages</b> "
         "right.",
-        f"Message <b>{CONTACT}</b> to say the group is ready. They switch it on, "
-        "and the bot posts and pins its join announcement there.",
+        "Send <b>/gate_announce</b> in the group. The bot posts and pins the join "
+        "announcement — and that command is also what switches the group on.",
     ], style=lead, gap=6))
 
     story.append(Spacer(1, 14))
-    story.append(panel("Why step 3 isn't automatic.", [
-        "Being in one of our groups is what qualifies someone for the Alumni "
-        "group. If adding the bot were enough on its own, anyone could make a "
-        "group, add it, and let themselves in — so a person with the bot's admin "
-        "rights confirms each group is really ours.",
-        "<b>Nothing happens in your group until they do.</b> If you skip step 3, "
-        "the bot sits there silently.",
+    story.append(panel("First time only: get yourself on the admin list.", [
+        f"Send <b>/id</b> to {BOT} in a private chat and give the number it replies "
+        f"with to <b>{CONTACT}</b>. This happens once, not per group — after that "
+        "every group you set up is entirely self-service.",
+        "Step 3 needs it because switching a group on is what makes being a member "
+        "there count towards joining the Alumni group. If just anyone could do it, "
+        "they could make a group and let themselves in. Until you're on the list, "
+        "<b>/gate_announce</b> stays silent rather than refusing.",
     ], style=lead))
 
     story.append(Spacer(1, 14))
     story.append(Paragraph(
-        "<b>Repeat in every group you want covered.</b> Each one is switched on "
-        "separately and gets its own announcement, so you choose which groups take "
-        "part and you can add more whenever you like.",
+        "<b>Repeat all three in every group you want covered.</b> Each one is "
+        "switched on separately and gets its own announcement, so you choose which "
+        "groups take part and you can add more whenever you like.",
         lead,
     ))
 
@@ -235,10 +242,10 @@ def build():
         ),
         Spacer(1, 4),
         Paragraph(
-            "Promoting the bot also tells us the group exists, which is why step 3 "
-            "is just a message rather than anything fiddly — whoever switches it on "
-            "already sees it in their list and doesn't need an ID or a link from "
-            "you.",
+            "Promoting the bot also tells it the group exists — but on its own that "
+            "grants nothing, because anyone can promote a bot in a group they just "
+            "made. Step 3 is the part that counts, and it's why that command is "
+            "restricted to people we've added to the admin list.",
             body,
         ),
     ))
@@ -283,10 +290,14 @@ def build():
     story.append(section(
         "If something looks wrong",
         symptom_table([
+            ("/gate_announce does nothing",
+             "Usually you're not on the admin list yet — see the box on page 1; it "
+             "stays silent rather than refusing. Otherwise the bot is a member but "
+             "not an <b>Administrator</b>, and can't post or read the group without "
+             "that."),
             ("Nothing happened at all",
-             "Either step 3 hasn't been done yet, or the bot is a member but not an "
-             "<b>Administrator</b> — it can't post or read the group without that. "
-             f"Check the rights, then message {CONTACT}."),
+             "Step 3 hasn't been done. Adding and promoting the bot alone leaves the "
+             "group switched off — that's deliberate, not a fault."),
             ("It isn't pinned",
              "The bot has admin rights but not <b>Pin messages</b>. The "
              "announcement still works unpinned."),
@@ -300,11 +311,11 @@ def build():
         ]),
         Spacer(1, 5),
         Paragraph(
-            "The bot has commands — <b>/gate_announce</b>, <b>/gate_stats</b>, "
-            "<b>/gate_groups</b>, <b>/gate_list</b>, <b>/gate_unwatch</b> — but they "
-            "all check an internal admin list and stay silent for everyone else. "
-            f"There is nothing here for you to run: if one does nothing, ask "
-            f"{CONTACT} rather than retrying.",
+            "Once you're on the admin list you also have <b>/gate_stats</b> (how "
+            "many are in, mid-onboarding, or unengaged), <b>/gate_groups</b> (every "
+            "group switched on) and <b>/gate_unwatch</b> (switch a group back off) "
+            "— all in a private chat with the bot. Every one of them answers you "
+            "privately, even when typed in a group.",
             small,
         ),
     ))

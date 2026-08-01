@@ -164,6 +164,18 @@ acting inside a group** — `/gate_announce` there, `/gate_watch` there, or the
 `GATE_MONITORED_GROUP_IDS` seed, which requires editing the deployment's
 environment. Auto-watch never sets it.
 
+**`ADMIN_IDS` is therefore the trust root, and it's meant to be widened.** Group
+leaders are expected to be on it, so that setting up a group stays self-service —
+add the bot, promote it, `/gate_announce` — with the check being "we chose this
+person" rather than "this person owns a group". Adding a leader is one-off; the
+alternative was them queueing behind whoever holds the list, every time.
+
+Worth knowing what that grants: `ADMIN_IDS` is a single list, so anyone on it also
+gets `/broadcast` (messages every user of the bot), `/backup` (dumps the DB),
+`/gate_list` (the full roster) and the mentor/mentee admin commands. If that's too
+much for a group leader, split it — a separate `GATE_APPROVER_IDS` consulted only
+by the approval paths is a small change, and this is the place to make it.
+
 **Approval gates everything, not just eligibility.** An unapproved group gets no
 announcement, no detection, no roundup. Announcing in one would invite its members
 to tap Join and then refuse them as ineligible, which is worse than silence — and
