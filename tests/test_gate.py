@@ -33,6 +33,12 @@ def live(tmp_path):
         settings,
         LIVE=True,
         GROUP_ID=ALUMNI_GROUP,
+        # Pinned off for the same reason ADMIN_IDS is patched: a developer with a
+        # real GATE_CHANNEL_ID in .env would otherwise see every admission grow a
+        # second button, and the no-channel assertions would pass or fail
+        # depending on whose machine ran them. The channel tests opt in with the
+        # with_channel fixture.
+        CHANNEL_ID=0,
         MONITORED_GROUP_IDS=[MONITORED],
         ANNOUNCE_INTERVAL_DAYS=5,
         INTRO_MIN_WORDS=50,
@@ -83,7 +89,7 @@ class _JobQueue:
 
 
 def _ctx(member_status=None, invite="https://t.me/+newlink", watched_status="member",
-         args=None, job_queue=None):
+         args=None, job_queue=None, channel_invite="https://t.me/+channellink"):
     """A context whose bot answers get_chat_member / create_chat_invite_link.
 
     The two groups are answered separately, because they ask opposite questions:
@@ -106,9 +112,18 @@ def _ctx(member_status=None, invite="https://t.me/+newlink", watched_status="mem
         return SimpleNamespace(status=status)
 
     bot_obj.get_chat_member = AsyncMock(side_effect=_member)
-    bot_obj.create_chat_invite_link = AsyncMock(
-        return_value=SimpleNamespace(invite_link=invite)
-    )
+
+    def _invite(chat_id, name=None, member_limit=None):
+        # Keyed on chat so a test can tell the group link from the channel one, and
+        # so a channel that refuses (bot not an admin there) can be simulated
+        # without also breaking the group link.
+        if chat_id == settings.CHANNEL_ID and settings.CHANNEL_ID:
+            if channel_invite is None:
+                raise BadRequest("not enough rights")
+            return SimpleNamespace(invite_link=channel_invite)
+        return SimpleNamespace(invite_link=invite)
+
+    bot_obj.create_chat_invite_link = AsyncMock(side_effect=_invite)
     bot_obj.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1000))
     bot_obj.pin_chat_message = AsyncMock()
     bot_obj.delete_message = AsyncMock()
@@ -657,6 +672,186 @@ def test_intro_admits(live):
     assert row["invite_link"] == "https://t.me/+minted"
     markup = reply.await_args.kwargs["reply_markup"]
     assert markup.inline_keyboard[0][0].url == "https://t.me/+minted"
+
+
+# ── The announcements channel, handed over alongside the group ──────────────────
+# Optional: with GATE_CHANNEL_ID unset nothing about a channel is said, which is
+# what every test above this line asserts by not mentioning one.
+
+CHANNEL = -1001572190121
+
+
+@pytest.fixture()
+def with_channel():
+    """GATE_CHANNEL_ID configured, as a deployment that has a channel would be."""
+    with patch.object(settings, "CHANNEL_ID", CHANNEL):
+        yield CHANNEL
+
+
+def _admit(uid=555, ctx=None):
+    """Take someone through the final intro step and return (ctx, reply)."""
+    asyncio.run(gdb.mark_awaiting_intro(uid, "alice", "Alice", "Ada Lovelace"))
+    ctx = ctx or _ctx(member_status=None, invite="https://t.me/+minted")
+    update, reply = _dm(_intro(), user=_user(uid=uid))
+    asyncio.run(gh.on_private_text(update, ctx))
+    return ctx, reply
+
+
+def _urls(markup):
+    return [b.url for row in markup.inline_keyboard for b in row]
+
+
+def test_admission_hands_over_the_channel_too(live, with_channel):
+    ctx, reply = _admit()
+
+    assert _urls(reply.await_args.kwargs["reply_markup"]) == [
+        "https://t.me/+minted", "https://t.me/+channellink",
+    ]
+    row = asyncio.run(gdb.get_user(555))
+    assert row["invite_link"] == "https://t.me/+minted"
+    assert row["channel_invite_link"] == "https://t.me/+channellink"
+
+
+def test_the_channel_link_is_single_use_and_per_person(live, with_channel):
+    """A reusable channel link would be forwardable to anyone who never onboarded."""
+    ctx, _ = _admit()
+
+    calls = {
+        call.kwargs["chat_id"]: call.kwargs
+        for call in ctx.bot.create_chat_invite_link.await_args_list
+    }
+    assert calls[CHANNEL]["member_limit"] == 1
+    assert "555" in calls[CHANNEL]["name"]
+
+
+def test_the_group_text_still_says_where_the_intro_goes(live, with_channel):
+    """Two destinations, so the intro instruction has to name the group.
+
+    A channel is broadcast-only — someone who reads "post your intro" and opens
+    the channel cannot post at all.
+    """
+    _, reply = _admit()
+
+    text = (reply.await_args.args[0] if reply.await_args.args else
+            reply.await_args.kwargs.get("text", "")).lower()
+    group_part, _, channel_part = text.partition("📣")
+    assert "group" in group_part and "intro" in group_part
+    assert "intro" not in channel_part
+
+
+def test_a_channel_that_refuses_does_not_cost_them_their_place(live, with_channel):
+    """The group is what admission means; the channel is the extra."""
+    ctx = _ctx(member_status=None, invite="https://t.me/+minted", channel_invite=None)
+
+    _, reply = _admit(ctx=ctx)
+
+    assert _urls(reply.await_args.kwargs["reply_markup"]) == ["https://t.me/+minted"]
+    row = asyncio.run(gdb.get_user(555))
+    assert row["status"] == "registered"
+    assert row["channel_invite_link"] is None
+
+
+def test_a_failed_group_link_still_fails_the_admission(live, with_channel):
+    """The channel must not paper over the one link that actually matters."""
+    ctx = _ctx(member_status=None, invite=None)
+    ctx.bot.create_chat_invite_link = AsyncMock(side_effect=BadRequest("no rights"))
+
+    _, reply = _admit(ctx=ctx)
+
+    assert "went wrong" in reply.await_args.args[0].lower()
+    assert asyncio.run(gdb.get_user(555))["status"] == "awaiting_intro"
+
+
+def test_returning_for_the_link_again_gets_both(live, with_channel):
+    _admit()
+    ctx = _ctx(member_status=None)
+    update, reply = _dm("anything")
+
+    asyncio.run(gh.on_private_text(update, ctx))
+
+    assert _urls(reply.await_args.kwargs["reply_markup"]) == [
+        "https://t.me/+minted", "https://t.me/+channellink",
+    ]
+    # Re-handed, not re-minted: the stored links are reused as they were.
+    ctx.bot.create_chat_invite_link.assert_not_awaited()
+
+
+def test_someone_registered_before_the_channel_existed_is_backfilled(live):
+    """Alumni already through the gate must not be left out of the channel forever."""
+    _admit()  # no channel configured yet
+    assert asyncio.run(gdb.get_user(555))["channel_invite_link"] is None
+
+    with patch.object(settings, "CHANNEL_ID", CHANNEL):
+        ctx = _ctx(member_status=None)
+        update, reply = _dm("anything")
+        asyncio.run(gh.on_private_text(update, ctx))
+
+    assert _urls(reply.await_args.kwargs["reply_markup"]) == [
+        "https://t.me/+minted", "https://t.me/+channellink",
+    ]
+    # Minted once and kept, so coming back a third time doesn't mint again.
+    assert asyncio.run(gdb.get_user(555))["channel_invite_link"] == \
+        "https://t.me/+channellink"
+
+
+def test_the_channel_column_is_added_to_an_existing_database(tmp_path):
+    """The live DB predates the column, so boot has to migrate it in place.
+
+    Asserted against the pre-channel schema rather than a fresh one, because a
+    fresh DB gets the column from the same ALTER and so proves nothing about the
+    rows already in production.
+    """
+    import aiosqlite
+
+    path = str(tmp_path / "old.db")
+
+    async def build_old_db():
+        async with aiosqlite.connect(path) as db:
+            await db.execute("""
+                CREATE TABLE gate_users (
+                    user_id INTEGER PRIMARY KEY, username TEXT, first_name TEXT,
+                    full_name TEXT, status TEXT NOT NULL, nudged_at TEXT,
+                    registered_at TEXT, invite_link TEXT, updated_at TEXT NOT NULL
+                )
+            """)
+            await db.execute(
+                "INSERT INTO gate_users (user_id, status, invite_link, updated_at) "
+                "VALUES (7, 'registered', 'https://t.me/+old', 'x')"
+            )
+            await db.commit()
+
+    asyncio.run(build_old_db())
+
+    with patch("config.DB_PATH", path), patch("gate.db.DB_PATH", path):
+        asyncio.run(gdb.init_schema())
+        row = asyncio.run(gdb.get_user(7))
+        assert row["invite_link"] == "https://t.me/+old"  # nothing lost
+        assert row["channel_invite_link"] is None
+
+        asyncio.run(gdb.set_channel_invite_link(7, "https://t.me/+chan"))
+        # A second boot must neither error on the existing column nor undo that.
+        asyncio.run(gdb.init_schema())
+        assert asyncio.run(gdb.get_user(7))["channel_invite_link"] == \
+            "https://t.me/+chan"
+
+
+def test_a_backfill_never_overwrites_a_link_already_issued(live):
+    """Two links to the same channel for one person would be one link too many."""
+    _admit()
+    asyncio.run(gdb.set_channel_invite_link(555, "https://t.me/+first"))
+    asyncio.run(gdb.set_channel_invite_link(555, "https://t.me/+second"))
+
+    assert asyncio.run(gdb.get_user(555))["channel_invite_link"] == \
+        "https://t.me/+first"
+
+
+def test_without_a_channel_nothing_changes(live):
+    """The whole feature is inert until GATE_CHANNEL_ID is set."""
+    ctx, reply = _admit()
+
+    assert _urls(reply.await_args.kwargs["reply_markup"]) == ["https://t.me/+minted"]
+    assert ctx.bot.create_chat_invite_link.await_count == 1
+    assert asyncio.run(gdb.get_user(555))["channel_invite_link"] is None
 
 
 def test_short_intro_is_rejected_and_gate_holds(live):

@@ -14,7 +14,12 @@
     'awaiting_name'  -> not found by tg_id or username; asked for their full
                         name so the form can be looked up by that instead.
     'awaiting_intro' -> form verified; waiting for the student's intro.
-    'registered'     -> fully onboarded and handed a one-time invite link.
+    'registered'     -> fully onboarded and handed a one-time invite link — plus a
+                        second one to the channel, where GATE_CHANNEL_ID is set.
+                        ``channel_invite_link`` is null both for rows written
+                        before the channel was configured and for anyone whose
+                        channel link failed to mint, and is backfilled on demand;
+                        only ``invite_link`` is guaranteed on this status.
 
 ``gate_announcements`` remembers the live "check if I'm in the alumni group"
 message per monitored group — its id so the previous one can be cleared when a
@@ -79,6 +84,11 @@ async def init_schema() -> None:
             "joined_group_at TEXT",
             "intro_posted_at TEXT",
             "intro_reminded_at TEXT",
+            # The channel link handed out alongside the group one. Null both for
+            # everyone registered before the channel existed and for anyone
+            # admitted while GATE_CHANNEL_ID is unset, so it is backfilled on
+            # demand rather than assumed present — see _existing_invite_markup.
+            "channel_invite_link TEXT",
         ):
             try:
                 await db.execute(f"ALTER TABLE gate_users ADD COLUMN {column}")
@@ -163,6 +173,7 @@ async def _upsert(
     nudged_at: str | None = None,
     registered_at: str | None = None,
     invite_link: str | None = None,
+    channel_invite_link: str | None = None,
     last_seen_chat_id: int | None = None,
 ) -> None:
     """Insert or update a row, preserving existing non-null fields.
@@ -177,8 +188,9 @@ async def _upsert(
             """
             INSERT INTO gate_users (
                 user_id, username, first_name, full_name, status,
-                nudged_at, registered_at, invite_link, last_seen_chat_id, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                nudged_at, registered_at, invite_link, channel_invite_link,
+                last_seen_chat_id, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id) DO UPDATE SET
                 username      = COALESCE(excluded.username, gate_users.username),
                 first_name    = COALESCE(excluded.first_name, gate_users.first_name),
@@ -189,6 +201,9 @@ async def _upsert(
                 -- re-tag advances it; other statuses pass None and preserve it.
                 registered_at = COALESCE(excluded.registered_at, gate_users.registered_at),
                 invite_link   = COALESCE(excluded.invite_link, gate_users.invite_link),
+                channel_invite_link = COALESCE(
+                    excluded.channel_invite_link, gate_users.channel_invite_link
+                ),
                 last_seen_chat_id = COALESCE(
                     excluded.last_seen_chat_id, gate_users.last_seen_chat_id
                 ),
@@ -196,7 +211,8 @@ async def _upsert(
             """,
             (
                 user_id, username, first_name, full_name, status,
-                nudged_at, registered_at, invite_link, last_seen_chat_id, now,
+                nudged_at, registered_at, invite_link, channel_invite_link,
+                last_seen_chat_id, now,
             ),
         )
         await db.commit()
@@ -270,8 +286,14 @@ async def mark_registered(
     first_name: str | None,
     full_name: str | None,
     invite_link: str,
+    channel_invite_link: str | None = None,
 ) -> None:
-    """Record that the user cleared the gate and was handed their link."""
+    """Record that the user cleared the gate and was handed their link(s).
+
+    ``channel_invite_link`` is optional because the channel is: admission means
+    the group, and a channel link that couldn't be minted must not cost someone
+    their place. It's COALESCEd like the rest, so a later backfill sticks.
+    """
     await _upsert(
         user_id,
         "registered",
@@ -280,7 +302,23 @@ async def mark_registered(
         full_name=full_name,
         registered_at=_now(),
         invite_link=invite_link,
+        channel_invite_link=channel_invite_link,
     )
+
+
+async def set_channel_invite_link(user_id: int, channel_invite_link: str) -> None:
+    """Attach a channel link to someone who already has their group one.
+
+    For rows written before the channel was configured. Status is deliberately
+    left alone — this is a backfill, not a state change.
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE gate_users SET channel_invite_link = ?, updated_at = ? "
+            "WHERE user_id = ? AND channel_invite_link IS NULL",
+            (channel_invite_link, _now(), user_id),
+        )
+        await db.commit()
 
 
 async def awaiting_form_users() -> list[dict]:

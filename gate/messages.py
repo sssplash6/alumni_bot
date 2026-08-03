@@ -205,12 +205,28 @@ ADMITTED = (
     "Once you're in, <b>post your intro</b> in the group so everyone can welcome "
     "you. 👋"
 )
+
+# Same moment, but there's a channel to hand over too. A separate string rather
+# than a conditional fragment: "both links are yours" has to be said plainly, and
+# the intro instruction has to stay pinned to the *group*, or people post it into
+# a channel they can't even write in.
+ADMITTED_WITH_CHANNEL = (
+    "🎉 <b>You're all set, {name}!</b>\n\n"
+    "Two taps below, and both links are one-time and just for you:\n\n"
+    "🎓 <b>The Alumni group</b> — the conversation. Once you're in, "
+    "<b>post your intro there</b> so everyone can welcome you. 👋\n"
+    "📣 <b>The channel</b> — announcements, opportunities and updates. Worth "
+    "joining now so you don't miss anything."
+)
 JOIN_BUTTON = "Join the Alumni group ▸"
+JOIN_CHANNEL_BUTTON = "Join the channel 📣"
 
 # They already finished onboarding and have a link — re-hand it, don't re-mint.
+# Deliberately vague about how many links: the same string is used whether or not
+# there's a channel button under it.
 ALREADY_REGISTERED = (
-    "You've already been cleared! ✅ Here's your personal invite link again — tap to "
-    "join the Alumni group."
+    "You've already been cleared! ✅ Here's your personal invite link again — tap "
+    "below to join."
 )
 
 ALREADY_MEMBER = "✅ You're already in the Alumni group — you're all set! 🎉"

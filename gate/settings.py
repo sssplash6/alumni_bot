@@ -33,6 +33,14 @@ LIVE: bool = _flag(os.environ.get("GATE_LIVE", ""))
 # to read membership and mint invite links. 0 means "not configured yet".
 GROUP_ID: int = int(os.environ.get("GATE_GROUP_ID", "0") or "0")
 
+# The announcements channel handed out alongside the group. The bot must be an
+# ADMIN here to mint invite links. 0 means "not configured", and then nothing about
+# a channel is ever mentioned — the group link is delivered exactly as before.
+#
+# Optional on purpose: the group is what admission *means*, so a channel that
+# can't be reached must never hold up an admission. See _issue_invite.
+CHANNEL_ID: int = int(os.environ.get("GATE_CHANNEL_ID", "0") or "0")
+
 # The groups watched for non-members. The bot must be an admin in each to receive
 # join events and (with privacy mode off) see messages.
 MONITORED_GROUP_IDS: list[int] = _parse_id_list(

@@ -150,6 +150,7 @@ DM nudge ──tap "Register"──▶ onboarding ◀──────┘
                         intro of at least GATE_INTRO_MIN_WORDS words
                                      │
                         mint member_limit=1 invite link
+                        (+ one for the channel, if configured)
                                      │
                         DM the personal link ──tap──▶ joins instantly
                                      │
@@ -203,7 +204,8 @@ human anywhere in it:
 1. make a group, add the bot, promote it → auto-watch enrols it;
 2. open the bot: eligibility finds them in "a watched group" → passes;
 3. fill in the form — it's public, and submitting it proves nothing;
-4. send fifty words → a single-use invite link to the alumni group.
+4. send fifty words → a single-use invite link to the alumni group, and to the
+   channel with it.
 
 So the watched set is split in two. `approved` is set only by a **bot admin
 acting inside a group** — `/gate_announce` there, `/gate_watch` there, or the
@@ -392,13 +394,16 @@ nothing at all in the alumni group.
 
 ## Configuration
 
-Two different things, easily confused:
+Three different things, the first two easily confused:
 
 - **`GATE_GROUP_ID` — the destination.** The one alumni group everyone should end
   up in. Stable; set once. The bot must be an admin here.
 - **The watched groups — the sources.** The groups checked for people missing from
   the destination. These change often, so they are **not** configuration: they
   live in the database and are managed live. No restart, no config edit.
+- **`GATE_CHANNEL_ID` — the second destination.** Optional. The announcements
+  channel handed over with the group link. The bot must be an admin here too. Not
+  a source: membership there is never read, and nobody is nudged about it.
 
   **Making the bot an admin in a group starts watching it — and nothing more.**
   The gate can't work without admin rights anyway (they're what deliver join
@@ -418,6 +423,34 @@ for. Removing an id from it does not unwatch the group; use `/gate_unwatch`.
 Watching the destination group is refused: it would nudge people about a group
 they are already in.
 
+### The announcements channel
+
+With `GATE_CHANNEL_ID` set, clearing the gate hands over **two** single-use links
+instead of one — the group and the channel — as two buttons under one message.
+Both are `member_limit=1` and per person, because a reusable channel link is
+forwardable to exactly the people the gate exists to keep out.
+
+The channel is deliberately subordinate to the group:
+
+- **It can never cost someone their admission.** If the channel link fails to mint
+  — unset, or the bot has lost admin rights there — that's logged and dropped, and
+  they're admitted with the group button alone. Only a failed *group* link fails an
+  admission (`_issue_invite`).
+- **The intro instruction stays pinned to the group.** A channel is broadcast-only,
+  so "post your intro" next to a channel button would send people somewhere they
+  can't type. Hence a separate `ADMITTED_WITH_CHANNEL` string rather than a
+  bolted-on sentence.
+- **Membership there is never read.** No nudges, no roundup, no eligibility check
+  touches the channel; being in it means nothing to the gate.
+- **It's backfilled, not backdated.** Anyone registered before the channel was
+  configured has `channel_invite_link` null. The next time they ask for their link,
+  one is minted and stored (`_existing_invite_markup`), so early alumni aren't
+  locked out of the channel forever. The backfill never overwrites a link already
+  issued, so nobody ends up holding two.
+
+Unset it and the feature is inert: no channel is mentioned anywhere, and the
+admission message is the original single-button one.
+
 Everything else is an environment variable prefixed `GATE_`, documented in
 `.env.example` and defined in `gate/settings.py`. The gate stays **dormant** until
 `GATE_LIVE=true` *and* `GATE_GROUP_ID` is set: the menu button says "coming soon",
@@ -431,7 +464,10 @@ detection does nothing, and no jobs are scheduled.
 3. **Privacy mode off** via BotFather `/setprivacy` → Disable, so the bot can see
    ordinary messages for the "first time they post" trigger.
 4. Airtable block filled in and verified with `scripts/check_airtable.py`.
-5. `GATE_GROUP_ID` set and `GATE_LIVE=true`.
+5. `GATE_GROUP_ID` set and `GATE_LIVE=true`. If you're handing over a channel, set
+   `GATE_CHANNEL_ID` and make the bot an **admin there with *Invite via link***,
+   otherwise every channel link silently fails to mint and people are admitted to
+   the group only.
 6. Restart, then **run `/gate_announce` inside each real community group.** This
    is what approves them; until then the gate does nothing anywhere and every
    applicant is refused. Check nothing unexpected is queued with `/gate_groups`.
@@ -460,6 +496,10 @@ before announcing.
 - **A welcome tag is lost if the bot restarts inside its window.** The buffer of
   newcomers is in memory on purpose; a persisted queue would replay stale
   welcomes after a redeploy, and the roundup names them anyway.
+- **A channel link is only as good as the bot's rights there.** Losing admin in the
+  channel doesn't break admissions — it just silently stops the second button
+  appearing. `grep "Failed to create Channel invite link"` in the logs is how you
+  find out.
 - **Invite links don't expire.** They're `member_limit=1`, but a forwarded link
   lets someone else consume the student's slot. Add `expire_date` in
   `_create_invite_link` if that matters.

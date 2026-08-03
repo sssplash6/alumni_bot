@@ -187,6 +187,10 @@ services:
         sync: false
       - key: GATE_GROUP_ID              # the one alumni group; bot must be admin
         sync: false
+      # Optional second destination, handed over with the group link at the end of
+      # onboarding. Bot must be an admin here too. Blank = no channel mentioned.
+      - key: GATE_CHANNEL_ID            # announcements channel
+        sync: false
       # One-time bootstrap only: copied into the DB at startup, after which
       # /gate_watch and /gate_unwatch own the list. Removing an id here does not
       # unwatch it. Never list GATE_GROUP_ID here — it is the destination, and

@@ -298,19 +298,39 @@ async def _in_an_approved_group(
 
 
 async def _create_invite_link(
-    context: ContextTypes.DEFAULT_TYPE, user_id: int
+    context: ContextTypes.DEFAULT_TYPE,
+    user_id: int,
+    chat_id: int | None = None,
+    label: str = "Alumni",
 ) -> str | None:
-    """Mint a single-use invite link to the alumni group, or None on failure."""
+    """Mint a single-use invite link to one chat, or None on failure.
+
+    Single-use for the channel as well as the group: both links are handed to one
+    verified person, and a forwarded reusable link would let anyone walk in.
+    """
     try:
         invite = await context.bot.create_chat_invite_link(
-            chat_id=settings.GROUP_ID,
-            name=f"Alumni {user_id}"[:32],
+            chat_id=chat_id if chat_id is not None else settings.GROUP_ID,
+            name=f"{label} {user_id}"[:32],
             member_limit=1,
         )
         return invite.invite_link
     except Exception:
-        logger.exception("Failed to create alumni invite link for user %d", user_id)
+        logger.exception(
+            "Failed to create %s invite link for user %d", label, user_id
+        )
         return None
+
+
+async def _create_channel_invite_link(
+    context: ContextTypes.DEFAULT_TYPE, user_id: int
+) -> str | None:
+    """Mint the channel link, or None if there's no channel or minting failed."""
+    if not settings.CHANNEL_ID:
+        return None
+    return await _create_invite_link(
+        context, user_id, chat_id=settings.CHANNEL_ID, label="Channel"
+    )
 
 
 def _mention(user_id: int, first_name: str | None) -> str:
@@ -323,8 +343,17 @@ def _register_url(bot_username: str) -> str:
     return f"https://t.me/{bot_username}?start={settings.START_PAYLOAD}"
 
 
-def _join_markup(link: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[InlineKeyboardButton(msg.JOIN_BUTTON, url=link)]])
+def _join_markup(link: str, channel_link: str | None = None) -> InlineKeyboardMarkup:
+    """The group button, plus the channel one when there's a channel link to give.
+
+    Group first and on its own row: it's what admission means, and the channel is
+    the extra. Absent a channel link this is byte-for-byte the old single button,
+    so nothing about the no-channel deployment changes.
+    """
+    rows = [[InlineKeyboardButton(msg.JOIN_BUTTON, url=link)]]
+    if channel_link:
+        rows.append([InlineKeyboardButton(msg.JOIN_CHANNEL_BUTTON, url=channel_link)])
+    return InlineKeyboardMarkup(rows)
 
 
 def _parse_ts(raw: str | None) -> datetime | None:
@@ -958,7 +987,7 @@ async def start_onboarding(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await message.reply_text(
             msg.ALREADY_REGISTERED,
             parse_mode="HTML",
-            reply_markup=_join_markup(existing["invite_link"]),
+            reply_markup=await _existing_invite_markup(context, existing),
         )
         return
 
@@ -1019,7 +1048,7 @@ async def on_check_form(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await reply(
             msg.ALREADY_REGISTERED,
             parse_mode="HTML",
-            reply_markup=_join_markup(existing["invite_link"]),
+            reply_markup=await _existing_invite_markup(context, existing),
         )
         return
 
@@ -1056,13 +1085,40 @@ async def _issue_invite(
     username: str | None,
     first_name: str | None,
     full_name: str | None,
-) -> str | None:
-    """Mint the one-time link and mark the user registered. None on failure."""
+) -> tuple[str, str | None] | None:
+    """Mint the one-time link(s) and mark the user registered. None on failure.
+
+    Only the group link can fail the admission. A channel link that can't be minted
+    — no channel configured, or the bot isn't an admin there any more — is logged
+    and dropped: it would be absurd to refuse someone their place in the group over
+    the secondary half of the message. They get the group button, and the channel
+    is backfilled next time they come back for their link.
+    """
     link = await _create_invite_link(context, user_id)
     if not link:
         return None
-    await db.mark_registered(user_id, username, first_name, full_name, link)
-    return link
+    channel_link = await _create_channel_invite_link(context, user_id)
+    await db.mark_registered(
+        user_id, username, first_name, full_name, link, channel_link
+    )
+    return link, channel_link
+
+
+async def _existing_invite_markup(
+    context: ContextTypes.DEFAULT_TYPE, row: dict
+) -> InlineKeyboardMarkup:
+    """Buttons for re-handing someone the link(s) they were already issued.
+
+    Backfills the channel link when the row predates the channel being configured,
+    so alumni who registered before it existed still get sent there rather than
+    being quietly left out of it forever.
+    """
+    channel_link = row["channel_invite_link"]
+    if not channel_link and settings.CHANNEL_ID:
+        channel_link = await _create_channel_invite_link(context, row["user_id"])
+        if channel_link:
+            await db.set_channel_invite_link(row["user_id"], channel_link)
+    return _join_markup(row["invite_link"], channel_link)
 
 
 def _new_token() -> str:
@@ -1239,7 +1295,7 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text(
             msg.ALREADY_REGISTERED,
             parse_mode="HTML",
-            reply_markup=_join_markup(row["invite_link"]),
+            reply_markup=await _existing_invite_markup(context, row),
         )
         return
 
@@ -1263,20 +1319,24 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         return
 
-    link = await _issue_invite(
+    issued = await _issue_invite(
         context, user.id, user.username, user.first_name, row["full_name"]
     )
-    if not link:
+    if not issued:
         await update.message.reply_text(msg.LINK_FAILED, parse_mode="HTML")
         return
+    link, channel_link = issued
 
     name = html.escape(row["full_name"] or user.first_name or "there")
     await update.message.reply_text(
-        msg.ADMITTED.format(name=name),
+        (msg.ADMITTED_WITH_CHANNEL if channel_link else msg.ADMITTED).format(name=name),
         parse_mode="HTML",
-        reply_markup=_join_markup(link),
+        reply_markup=_join_markup(link, channel_link),
     )
-    logger.info("Gate admitted user %d (@%s) after form + intro", user.id, user.username)
+    logger.info(
+        "Gate admitted user %d (@%s) after form + intro (channel link: %s)",
+        user.id, user.username, "yes" if channel_link else "no",
+    )
 
 
 async def on_private_non_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1297,7 +1357,7 @@ async def on_private_non_text(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(
             msg.ALREADY_REGISTERED,
             parse_mode="HTML",
-            reply_markup=_join_markup(row["invite_link"]),
+            reply_markup=await _existing_invite_markup(context, row),
         )
         return
 
