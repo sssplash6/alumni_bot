@@ -86,10 +86,31 @@ INTRO_MIN_WORDS: int = int(os.environ.get("GATE_INTRO_MIN_WORDS", "50") or "50")
 TOKEN_TTL_DAYS: int = int(os.environ.get("GATE_TOKEN_TTL_DAYS", "3") or "3")
 
 # How often (days) to re-post the pinned "check if I'm in the alumni group"
-# announcement — the only way to reach people who were already in a monitored
-# group before the bot arrived and who never post. 0 disables the re-post.
+# announcement. 0 — the default — posts it ONCE per group and never again.
+#
+# The announcement is a cold-start device: it exists to turn the people who were
+# already in a monitored group before the bot arrived, and who never post, into
+# known user IDs. Once it has been up for a cycle it has caught everyone it is
+# going to catch, and re-posting only re-pins the same text over a settled group
+# every few days. Chasing whoever ignored it is the follow-up roundup's job, and
+# that names them individually instead of repeating itself at everybody.
+#
+# Set >0 only for a group that keeps taking in people the roundup can't see. Note
+# that /gate_announce posts on demand whatever this says, so a one-off re-post
+# never needs a config change.
 ANNOUNCE_INTERVAL_DAYS: int = int(
-    os.environ.get("GATE_ANNOUNCE_INTERVAL_DAYS", "5") or "5"
+    os.environ.get("GATE_ANNOUNCE_INTERVAL_DAYS", "0") or "0"
+)
+
+# How often (days) the follow-up roundup names the people who were nudged a cycle
+# ago and have tapped nothing since. Doubles as the staleness cutoff: nobody is
+# named until their last nudge is this old. 0 disables the roundup.
+#
+# Deliberately separate from ANNOUNCE_INTERVAL_DAYS. The two shared one setting
+# once, which meant turning off the re-post silently turned off the roundup as
+# well — the exact opposite of what you want when the announcement is a one-off.
+FOLLOWUP_INTERVAL_DAYS: int = int(
+    os.environ.get("GATE_FOLLOWUP_INTERVAL_DAYS", "5") or "5"
 )
 
 # Tag a newcomer in the group they joined, once the announcement is up there.

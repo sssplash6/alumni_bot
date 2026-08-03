@@ -303,8 +303,9 @@ Watch the build log for:
 
 - `pip install -r requirements.txt` succeeding, including
   `python-telegram-bot[job-queue]` (the `job-queue` extra is load-bearing — the
-  DB backup job, the gate's Airtable poll and the announcement re-post all need
-  `JobQueue`; without it `app.job_queue` is `None` and they silently never run).
+  DB backup job, the gate's Airtable poll, its announcement and its follow-up
+  roundup all need `JobQueue`; without it `app.job_queue` is `None` and they
+  silently never run).
 - The Python version in the log matching your pin.
 
 ---
@@ -529,8 +530,8 @@ been migrated. Recording the shape of it for future reference only:
 - [ ] **No free tier for workers**, and no supported free workaround. Budget
       ~$7.25/month.
 - [ ] **The job-queue extra matters.** If `requirements.txt` ever loses
-      `python-telegram-bot[job-queue]`, backups, the Airtable poll and the
-      announcement re-post stop running with no error.
+      `python-telegram-bot[job-queue]`, backups, the Airtable poll, the
+      announcement and the follow-up roundup stop running with no error.
 
 ---
 

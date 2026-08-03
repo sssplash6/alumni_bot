@@ -40,7 +40,11 @@ def live(tmp_path):
         # with_channel fixture.
         CHANNEL_ID=0,
         MONITORED_GROUP_IDS=[MONITORED],
+        # Re-posts on, so the tests that predate the announce-once default still
+        # exercise the cadence. Production defaults to 0 — see the announce-once
+        # tests below.
         ANNOUNCE_INTERVAL_DAYS=5,
+        FOLLOWUP_INTERVAL_DAYS=5,
         INTRO_MIN_WORDS=50,
         REQUIRE_WATCHED_GROUP=True,
         WELCOME_TAG=True,
@@ -270,6 +274,75 @@ def test_announce_job_skips_groups_not_due(live):
     asyncio.run(gh.announce_job(ctx))
 
     ctx.bot.send_message.assert_not_awaited()
+
+
+def _age_announcement(chat_id, days):
+    """Backdate a group's announcement so the re-post cadence considers it due."""
+    import aiosqlite
+    from datetime import datetime, timedelta, timezone
+
+    when = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+    async def run():
+        async with aiosqlite.connect(gdb.DB_PATH) as db:
+            await db.execute(
+                "UPDATE gate_announcements SET posted_at = ? WHERE chat_id = ?",
+                (when, chat_id),
+            )
+            await db.commit()
+
+    asyncio.run(run())
+
+
+def test_announce_job_reposts_when_the_interval_has_passed(live):
+    asyncio.run(gdb.set_announcement(MONITORED, 42))
+    _age_announcement(MONITORED, 6)
+    ctx = _ctx(member_status=None)
+
+    asyncio.run(gh.announce_job(ctx))
+
+    ctx.bot.send_message.assert_awaited_once()
+
+
+def test_announce_once_never_reposts(live, monkeypatch):
+    """Interval 0 — the production default — means the first post was the only one.
+
+    However old the announcement gets. Re-pinning the same notice at a group that
+    has mostly already joined is what the follow-up roundup replaces.
+    """
+    asyncio.run(gdb.set_announcement(MONITORED, 42))
+    _age_announcement(MONITORED, 400)
+    monkeypatch.setattr(settings, "ANNOUNCE_INTERVAL_DAYS", 0)
+    ctx = _ctx(member_status=None)
+
+    asyncio.run(gh.announce_job(ctx))
+
+    ctx.bot.send_message.assert_not_awaited()
+    # And the one on record is untouched, so the welcome tag still fires.
+    assert asyncio.run(gdb.get_announcement(MONITORED))["message_id"] == 42
+
+
+def test_announce_once_still_makes_the_first_post(live, monkeypatch):
+    """/gate_watch approves without announcing, so a group can be approved and
+    silent. The job has to cover that even with re-posts off."""
+    monkeypatch.setattr(settings, "ANNOUNCE_INTERVAL_DAYS", 0)
+    ctx = _ctx(member_status=None)
+
+    asyncio.run(gh.announce_job(ctx))
+
+    ctx.bot.send_message.assert_awaited_once()
+    assert ctx.bot.send_message.await_args.kwargs["chat_id"] == MONITORED
+
+
+def test_gate_announce_reposts_even_with_the_interval_off(live, monkeypatch):
+    """The manual command is the escape hatch: it never consults the cadence."""
+    asyncio.run(gdb.set_announcement(MONITORED, 42))
+    monkeypatch.setattr(settings, "ANNOUNCE_INTERVAL_DAYS", 0)
+    ctx = _ctx(member_status=None)
+
+    assert asyncio.run(gh.post_announcement(ctx, MONITORED)) is True
+
+    ctx.bot.delete_message.assert_awaited_once_with(MONITORED, 42)
 
 
 def test_announcement_offers_both_buttons(live):
@@ -1536,7 +1609,37 @@ def test_followup_retries_after_a_send_failure(live):
 def test_followup_dormant_when_interval_disabled(live, monkeypatch):
     asyncio.run(gdb.mark_nudged(111, "one", "One", MONITORED))
     _age_nudge(111, 60)
+    monkeypatch.setattr(settings, "FOLLOWUP_INTERVAL_DAYS", 0)
+    ctx = _ctx(member_status=None)
+
+    asyncio.run(gh.followup_job(ctx))
+
+    ctx.bot.send_message.assert_not_awaited()
+
+
+def test_followup_survives_announce_once(live, monkeypatch):
+    """The two cadences share nothing.
+
+    They used to read one setting, so turning off the announcement re-post also
+    silently killed the roundup — which is the half you actually want kept when
+    the announcement is a one-off.
+    """
+    asyncio.run(gdb.mark_nudged(111, "one", "One", MONITORED))
+    _age_nudge(111, 6)
     monkeypatch.setattr(settings, "ANNOUNCE_INTERVAL_DAYS", 0)
+    ctx = _ctx(member_status=None)
+
+    asyncio.run(gh.followup_job(ctx))
+
+    ctx.bot.send_message.assert_awaited_once()
+    assert "tg://user?id=111" in ctx.bot.send_message.await_args.kwargs["text"]
+
+
+def test_followup_uses_its_own_cutoff(live, monkeypatch):
+    """Staleness is measured in follow-up days, not announcement days."""
+    asyncio.run(gdb.mark_nudged(111, "one", "One", MONITORED))
+    _age_nudge(111, 6)
+    monkeypatch.setattr(settings, "FOLLOWUP_INTERVAL_DAYS", 30)
     ctx = _ctx(member_status=None)
 
     asyncio.run(gh.followup_job(ctx))

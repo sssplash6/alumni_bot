@@ -228,7 +228,13 @@ services:
       #   GATE_INTRO_MIN_WORDS       default 50
       #   GATE_TOKEN_TTL_DAYS        default 3    (0 = invite codes never expire)
       #   GATE_INTRO_REMINDER_HOURS  default 3    (0 disables the intro check)
-      #   GATE_ANNOUNCE_INTERVAL_DAYS default 5   (0 disables the re-post)
+      #   GATE_ANNOUNCE_INTERVAL_DAYS default 0   — 0 posts the pinned
+      #                              announcement once per group and never
+      #                              re-posts it; >0 re-posts every N days
+      #   GATE_FOLLOWUP_INTERVAL_DAYS default 5   — how often the roundup names
+      #                              whoever still hasn't registered, and how
+      #                              stale a nudge must be to qualify
+      #                              (0 disables the roundup)
       #   GATE_POLL_INTERVAL_MINUTES default 3    (0 disables the Airtable poll)
       #   GATE_AIRTABLE_TG_FIELD     default tg_id
       #   GATE_AIRTABLE_DONE_FIELD   optional

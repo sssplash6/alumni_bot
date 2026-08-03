@@ -31,12 +31,18 @@ reply to someone who has messaged it first — which is also why every admin in
 
 Exactly three things:
 
-1. **The pinned announcement.**
+1. **The pinned announcement** — once per group, at the start.
 2. **The welcome tag** — newcomers who join a group that already carries the
    announcement, and who aren't in the alumni group, are named there shortly after
    arriving.
 3. **The follow-up roundup** — one batched message naming the people who still
-   haven't tapped either of its buttons.
+   haven't tapped either of its buttons, every
+   `GATE_FOLLOWUP_INTERVAL_DAYS` (default 5).
+
+One announcement then a recurring roundup, in other words: the notice goes up once,
+and after that the gate names the individuals still missing rather than repeating
+the notice at everyone. The two cadences are separate settings, so switching the
+re-post off leaves the roundup running.
 
 Everything else the gate says to a person is private: a DM, or the popup answer
 to their tap. False membership claims are corrected in private, and admin command
@@ -77,15 +83,22 @@ A contradicted claim gets a popup, a DM if the bot can reach them, and a
 keeps naming them until they actually register. Neither outcome is posted in the
 group; being corrected in front of everyone would be worse than the problem.
 
-It re-posts every `GATE_ANNOUNCE_INTERVAL_DAYS` (default 5), deleting the previous
-one so exactly one is live. It only ever posts in **approved** groups.
+**It is posted once per group and then left alone.** Announcing again at a group
+that has mostly already joined just re-pins the same notice; naming the specific
+people still missing is the roundup's job. Set `GATE_ANNOUNCE_INTERVAL_DAYS` above
+0 to re-post every N days anyway — worth it only for a group with a constant
+intake — and the previous announcement is deleted so exactly one is ever live.
 
-`/gate_announce` skips the wait, and is **admins-only, because running it inside a
-group is what approves that group** — see below.
+`/gate_announce` posts on demand whatever the interval says, so a one-off re-post
+never needs a config change. It is **admins-only, because running it inside a
+group is what approves that group** — see below. The gate only ever posts in
+**approved** groups.
 
-The re-post job ticks hourly but only acts where the stored timestamp says a group
-is due, so restarting the bot can't spam a fresh announcement and the cadence
-holds even if it restarts mid-cycle.
+The job ticks hourly but only acts where the stored timestamp says a group is due,
+so restarting the bot can't spam a fresh announcement and the cadence holds even
+if it restarts mid-cycle. It stays scheduled even with re-posts off: a group
+approved by `/gate_watch` carries no announcement yet, and this is what gives it
+its first one.
 
 ## Welcoming a newcomer
 

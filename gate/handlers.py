@@ -71,9 +71,9 @@ ENTER_CB = "start:alumnigate"
 INTRO_YES_CB = "gate:intro_yes"
 INTRO_NO_CB = "gate:intro_no"
 
-# The announcement job wakes up far more often than the re-post interval and lets
-# the recorded timestamp decide whether a group is due, so the cadence holds even
-# across bot restarts.
+# Both group jobs wake up far more often than their interval and let the recorded
+# timestamps decide whether anything is due, so the cadence holds across bot
+# restarts instead of resetting on every deploy.
 _ANNOUNCE_TICK_SECONDS = 3600
 
 # The follow-up sweep names people in batches: Telegram caps a group at roughly 20
@@ -559,10 +559,17 @@ async def _announced(chat_id: int) -> bool:
 
 
 def _announcement_due(previous: dict | None) -> bool:
-    """True if this group is due a fresh announcement."""
+    """True if this group is due a fresh announcement.
+
+    A group that has never carried one is always due — that first post is what
+    /gate_watch approval leaves undone. Whether there's ever a second is up to
+    GATE_ANNOUNCE_INTERVAL_DAYS, where 0 means the first was the only one.
+    """
     posted = _parse_ts(previous["posted_at"]) if previous else None
     if posted is None:
         return True
+    if settings.ANNOUNCE_INTERVAL_DAYS <= 0:
+        return False
     return datetime.now(timezone.utc) - posted >= timedelta(
         days=settings.ANNOUNCE_INTERVAL_DAYS
     )
@@ -753,8 +760,12 @@ async def followup_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     """A cycle after being tagged, chase everyone who still hasn't engaged.
 
     Targets are people with status 'nudged' whose tag is older than
-    GATE_ANNOUNCE_INTERVAL_DAYS — i.e. seen in a monitored group, told once, and
+    GATE_FOLLOWUP_INTERVAL_DAYS — i.e. seen in a monitored group, told once, and
     they've tapped nothing since.
+
+    This, not the announcement, is the recurring half of the flow: it names the
+    specific people still missing rather than re-pinning the same notice at a
+    group that has mostly already joined.
 
     HARD LIMIT worth understanding: this can only reach people the bot has a user
     ID for. Telegram never enumerates a group's members, so someone who has never
@@ -762,12 +773,12 @@ async def followup_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     sweep is concerned and cannot be tagged. The pinned announcement is what
     converts those people into known IDs.
     """
-    if not settings.active() or settings.ANNOUNCE_INTERVAL_DAYS <= 0:
+    if not settings.active() or settings.FOLLOWUP_INTERVAL_DAYS <= 0:
         return
 
     cutoff = (
         datetime.now(timezone.utc)
-        - timedelta(days=settings.ANNOUNCE_INTERVAL_DAYS)
+        - timedelta(days=settings.FOLLOWUP_INTERVAL_DAYS)
     ).isoformat()
 
     for chat_id in sorted(approved_ids()):
@@ -1780,8 +1791,9 @@ def register(app: Application) -> None:
 
     if app.job_queue is None:
         logger.warning(
-            "No JobQueue available — the gate's form poll and announcement "
-            "re-posts will not run. Install python-telegram-bot[job-queue]."
+            "No JobQueue available — the gate's form poll, announcement and "
+            "follow-up roundup will not run. Install "
+            "python-telegram-bot[job-queue]."
         )
         return
 
@@ -1796,18 +1808,29 @@ def register(app: Application) -> None:
             "Gate form poll scheduled every %d min", settings.POLL_INTERVAL_MINUTES
         )
 
+    # Scheduled whatever the interval says: a group approved by /gate_watch is
+    # carrying no announcement at all, and this job is what gives it its first
+    # one. The interval only decides whether it ever gets a second.
+    app.job_queue.run_repeating(
+        announce_job, interval=_ANNOUNCE_TICK_SECONDS, first=60
+    )
     if settings.ANNOUNCE_INTERVAL_DAYS > 0:
-        app.job_queue.run_repeating(
-            announce_job, interval=_ANNOUNCE_TICK_SECONDS, first=60
+        logger.info(
+            "Gate announcement re-posts every %d days",
+            settings.ANNOUNCE_INTERVAL_DAYS,
         )
-        # Same hourly tick, offset so the two never post in the same minute. Each
-        # decides for itself whether anything is actually due.
+    else:
+        logger.info("Gate announcement posts once per group and is not re-posted.")
+
+    if settings.FOLLOWUP_INTERVAL_DAYS > 0:
+        # Same hourly tick as the announcement, offset so the two never post in
+        # the same minute. Each decides for itself whether anything is due.
         app.job_queue.run_repeating(
             followup_job, interval=_ANNOUNCE_TICK_SECONDS, first=900
         )
         logger.info(
-            "Gate announcement re-posts every %d days; unengaged people are "
-            "chased on the same cycle", settings.ANNOUNCE_INTERVAL_DAYS
+            "Gate follow-up roundup names anyone unengaged for %d days",
+            settings.FOLLOWUP_INTERVAL_DAYS,
         )
 
     if settings.INTRO_REMINDER_HOURS > 0:
