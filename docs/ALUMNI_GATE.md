@@ -29,25 +29,32 @@ reply to someone who has messaged it first — which is also why every admin in
 
 ## What the gate is allowed to post in a group
 
-Exactly two things:
+Exactly three things:
 
 1. **The pinned announcement.**
-2. **The follow-up roundup** — one batched message naming the people who still
+2. **The welcome tag** — newcomers who join a group that already carries the
+   announcement, and who aren't in the alumni group, are named there shortly after
+   arriving.
+3. **The follow-up roundup** — one batched message naming the people who still
    haven't tapped either of its buttons.
 
 Everything else the gate says to a person is private: a DM, or the popup answer
-to their tap. Nobody is tagged in the group for not having joined, false
-membership claims are corrected in private, and admin command confirmations
-(`/gate_watch`, `/gate_unwatch`, `/gate_announce`, `/id`) are routed to the
-admin's DM even when the command is typed in the group — see `_reply_privately`
-in `gate/handlers.py`. Those confirmations fall back to a reply in place only if
-the DM bounces, since silence would read as the command being broken.
+to their tap. False membership claims are corrected in private, and admin command
+confirmations (`/gate_watch`, `/gate_unwatch`, `/gate_announce`, `/id`) are routed
+to the admin's DM even when the command is typed in the group — see
+`_reply_privately` in `gate/handlers.py`. Those confirmations fall back to a reply
+in place only if the DM bounces, since silence would read as the command being
+broken.
 
-The cost of that rule is real: a detection nudge can only be delivered to someone
-who has messaged the bot before, so for most people it silently fails. They are
-still recorded, and the announcement plus the roundup are what actually reach
-them. The roundup is the one place the gate names people publicly, and it names
-them as a group rather than one message each.
+All three public posts exist for the same reason: a detection nudge can only be
+delivered to someone who has messaged the bot before, so for most people — and for
+a brand-new member almost always — it silently fails. They're still recorded, and
+the group is the only channel that actually reaches them. Both the welcome tag and
+the roundup name people **as a group rather than one message each**, which is what
+keeps them inside Telegram's rate limit and out of the way of the conversation.
+
+What is still never posted: anything about someone's *intro* (see the intro
+reminder below), and any correction of a false membership claim.
 
 ## The pinned announcement
 
@@ -79,6 +86,41 @@ group is what approves that group** — see below.
 The re-post job ticks hourly but only acts where the stored timestamp says a group
 is due, so restarting the bot can't spam a fresh announcement and the cadence
 holds even if it restarts mid-cycle.
+
+## Welcoming a newcomer
+
+Someone joining a watched group **after** it has been announced in is checked
+against the alumni group, and if they're missing from it they're named in that
+group with the Register button attached. Controlled by `GATE_WELCOME_TAG`
+(default on).
+
+This is the one channel that reliably reaches a new arrival. The DM nudge is
+attempted first and almost always fails for them — they've never messaged the bot
+— and the pinned announcement only works if they scroll back to it.
+
+Four things narrow it, and each is load-bearing:
+
+- **Only after the announcement.** The tag points at the bot; the pinned message
+  is the context that makes that make sense. A group that's approved but not yet
+  announced in gets nothing, and the newcomer waits for the roundup instead.
+- **Only on a join.** First-time *posters* are deliberately not tagged — they're
+  mid-conversation, and the roundup reaches them soon enough. `_process_user`
+  returns whether it nudged and the join path decides; the check itself never
+  posts publicly.
+- **Coalesced, not one message each.** Arrivals are buffered for
+  `_WELCOME_TAG_DELAY` (45s) and flushed as one batched mention, so an admin
+  adding a dozen people produces one message rather than a dozen into the same
+  rate limit the roundup batches to dodge. Whoever arrives first schedules the
+  flush; everyone inside the window rides along on it.
+- **Status is re-read at flush time.** That delay is exactly long enough for a
+  keen newcomer to have already tapped through, and tagging them then would be
+  wrong twice — a public call-out for something they've done, and a re-stamp to
+  `nudged` that would discard their onboarding progress (`_upsert` writes `status`
+  unconditionally).
+
+A delivered tag re-stamps `nudged_at`, so the roundup's clock counts from the tag
+rather than from the join. A tag that fails to send leaves the stamp alone and the
+roundup picks them up as normal.
 
 ## Onboarding flow
 
@@ -113,6 +155,10 @@ DM nudge ──tap "Register"──▶ onboarding ◀──────┘
                                      │
                         they re-post their intro in the alumni group
 ```
+
+**"DM nudge" above stands for any of the three chases**, which all carry the same
+Register button and all land in the same place: the private nudge, the welcome tag
+on joining, and the roundup mention five days later.
 
 **How the form is matched to the person.** The Bot API can't read who filled out
 a form, so each student gets a *personalized* form link with their Telegram user
@@ -403,13 +449,17 @@ before announcing.
   announcement is designed to make the third option nearly frictionless, but it
   can't be forced.
 - **A detection nudge usually can't be delivered.** It's a DM, and Telegram only
-  lets a bot DM someone who has messaged it first. The person is recorded either
-  way; the roundup is what reaches them. This is the price of never tagging
-  anyone in the group, and it's deliberate.
-- **The roundup is the only group-wide rate-limit risk.** It batches eight
-  mentions per message and pauses between batches, because Telegram caps a group
-  at roughly 20 messages/minute. If you expect a large simultaneous wave, add
-  `AIORateLimiter` to the application builder.
+  lets a bot DM someone who has messaged it first — which a newcomer never has.
+  The person is recorded either way, and the welcome tag and roundup are what
+  reach them.
+- **The welcome tag and the roundup are the group-wide rate-limit risks.** Both
+  batch eight mentions per message and pause between batches, because Telegram
+  caps a group at roughly 20 messages/minute — that's why a bulk add produces one
+  message rather than one per arrival. If you expect a large simultaneous wave,
+  add `AIORateLimiter` to the application builder.
+- **A welcome tag is lost if the bot restarts inside its window.** The buffer of
+  newcomers is in memory on purpose; a persisted queue would replay stale
+  welcomes after a redeploy, and the roundup names them anyway.
 - **Invite links don't expire.** They're `member_limit=1`, but a forwarded link
   lets someone else consume the student's slot. Add `expire_date` in
   `_create_invite_link` if that matters.

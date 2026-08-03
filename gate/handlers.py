@@ -82,6 +82,19 @@ _ANNOUNCE_TICK_SECONDS = 3600
 _FOLLOWUP_BATCH = 8
 _FOLLOWUP_BATCH_PAUSE = 4.0
 
+# Newcomers are welcomed as a group, not one message each: an admin adding a dozen
+# people at once would otherwise fire a dozen messages into the same flood limit
+# the sweep above batches to dodge. Long enough to catch a bulk add, short enough
+# that the tag still lands in the newcomer's first minute in the room.
+_WELCOME_TAG_DELAY = 45.0
+_WELCOME_JOB_PREFIX = "gate_welcome:"
+
+# Newcomers seen but not yet welcomed, per group. In memory on purpose: a restart
+# inside the window drops the tag, and the five-day sweep names them anyway, which
+# is a far better trade than a persisted queue that replays stale welcomes after
+# a redeploy.
+_pending_welcome: dict[int, list[dict]] = {}
+
 # The intro reminder is due at a per-person deadline rather than on a shared
 # cycle, so the job ticks often and lets the stored join time decide. Quarter of
 # an hour keeps it within a sensible margin of the configured delay without the
@@ -367,28 +380,31 @@ async def _dm_nudge(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user) -> b
 
 async def _process_user(
     context: ContextTypes.DEFAULT_TYPE, chat_id: int, user
-) -> None:
+) -> bool:
     """Check one user against the alumni group and nudge them once if missing.
 
     Anyone already classified (member / nudged / onboarding / registered) is
     skipped — this enforces "nudge once" and caches the membership lookup.
 
-    Nothing is posted in the group: the nudge is a DM, and if it can't be
-    delivered they're still recorded so the follow-up roundup names them.
+    This posts nothing in the group itself: the nudge is a DM, and if it can't be
+    delivered they're still recorded so the follow-up roundup names them. Callers
+    who want a public tag as well use the return value to decide — True means this
+    person is genuinely missing from the alumni group and was just nudged.
     """
     if user is None or user.is_bot:
-        return
+        return False
     if not settings.active():
-        return  # dormant or not configured
+        return False  # dormant or not configured
 
     if await db.get_user(user.id) is not None:
-        return
+        return False
 
     if await _is_member(context, user.id):
         await db.mark_member(user.id, user.username, user.first_name)
-        return
+        return False
 
     await _dm_nudge(context, chat_id, user)
+    return True
 
 
 def _just_joined(result) -> bool:
@@ -413,8 +429,16 @@ async def on_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await db.mark_joined_group(user.id, user.username, user.first_name)
         return
 
-    if is_approved(chat_id):
-        await _process_user(context, chat_id, user)
+    if not is_approved(chat_id):
+        return
+
+    # A join is the one moment a public tag is worth the noise: they have almost
+    # certainly never messaged the bot, so the DM above silently failed, and they
+    # have no history in the group to interrupt. First-time posters (see
+    # on_group_message) are deliberately not tagged this way — they're mid-
+    # conversation, and the five-day sweep reaches them soon enough.
+    if await _process_user(context, chat_id, user):
+        await _queue_welcome_tag(context, chat_id, user)
 
 
 async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -500,6 +524,11 @@ def _announce_markup() -> InlineKeyboardMarkup:
     ])
 
 
+async def _announced(chat_id: int) -> bool:
+    """True once this group carries the announcement."""
+    return (await db.get_announcement(chat_id)) is not None
+
+
 def _announcement_due(previous: dict | None) -> bool:
     """True if this group is due a fresh announcement."""
     posted = _parse_ts(previous["posted_at"]) if previous else None
@@ -567,6 +596,130 @@ async def announce_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             await post_announcement(context, chat_id)
 
 
+async def _post_mention_batches(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    template: str,
+    rows: list[dict],
+) -> int:
+    """Name people in a group, batched, and re-stamp everyone actually named.
+
+    Telegram caps a group at roughly 20 messages a minute, so one message per
+    person would both hit the flood limit and bury the group. A batched mention
+    still gives everyone named a real notification.
+
+    Re-stamping ``nudged_at`` is what keeps the tag cadence honest: it means "when
+    we last chased this person", so the next sweep counts from this message rather
+    than from whenever they were first seen. A batch that fails to send is left
+    unstamped and abandons the rest, so the next sweep retries the same people
+    instead of skipping them.
+
+    Returns how many people were successfully named.
+    """
+    button = InlineKeyboardButton(
+        msg.REGISTER_BUTTON, url=_register_url(context.bot.username)
+    )
+    named = 0
+
+    for start in range(0, len(rows), _FOLLOWUP_BATCH):
+        batch = rows[start:start + _FOLLOWUP_BATCH]
+        mentions = ", ".join(
+            _mention(row["user_id"], row["first_name"]) for row in batch
+        )
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=template.format(mentions=mentions),
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([[button]]),
+                disable_web_page_preview=True,
+            )
+        except Exception:
+            logger.exception(
+                "Mention batch failed in chat %d; will retry next sweep", chat_id
+            )
+            break
+
+        for row in batch:
+            await db.mark_nudged(
+                row["user_id"], row["username"], row["first_name"], chat_id
+            )
+        named += len(batch)
+        # Space the batches out, but don't idle after the last one.
+        if start + _FOLLOWUP_BATCH < len(rows):
+            await asyncio.sleep(_FOLLOWUP_BATCH_PAUSE)
+
+    return named
+
+
+async def _flush_welcome_tags(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Tag the newcomers buffered for one group since the last flush.
+
+    Joins are coalesced rather than answered one message each: people arrive in
+    bursts — an admin adding a dozen at once — and a message per arrival would
+    trip the same flood limit the follow-up sweep batches to avoid.
+
+    The buffer is drained before the first send, so someone arriving mid-flush is
+    never named twice; they wait for the flush the next arrival schedules, or for
+    the five-day sweep. That sub-second window isn't worth a self-rescheduling job.
+
+    Status is re-read rather than trusted from the buffer. The delay is precisely
+    long enough for a keen newcomer to have tapped through already, and tagging
+    them then would be both wrong in public and wrong in the database — the tag
+    re-stamps them as 'nudged', which would undo the progress they just made.
+    """
+    chat_id = context.job.chat_id
+    buffered = _pending_welcome.pop(chat_id, [])
+    rows = [
+        row for row in buffered
+        if (await db.get_user(row["user_id"]) or {}).get("status") == "nudged"
+    ]
+    if not rows:
+        return
+
+    logger.info(
+        "Welcoming %d of %d buffered newcomer(s) in chat %d",
+        len(rows), len(buffered), chat_id,
+    )
+    await _post_mention_batches(context, chat_id, msg.GROUP_WELCOME_TAG, rows)
+
+
+async def _queue_welcome_tag(
+    context: ContextTypes.DEFAULT_TYPE, chat_id: int, user
+) -> None:
+    """Buffer a newcomer for the group's next welcome flush.
+
+    Only groups already carrying the announcement get one: the tag points at the
+    bot, and the pinned message is the context that makes that make sense. A group
+    approved but not yet announced in is left alone until it is.
+    """
+    if not settings.WELCOME_TAG or not await _announced(chat_id):
+        return
+
+    _pending_welcome.setdefault(chat_id, []).append({
+        "user_id": user.id,
+        "username": user.username,
+        "first_name": user.first_name,
+    })
+
+    if context.job_queue is None:
+        # No JobQueue to coalesce with; post it now rather than lose the tag.
+        await _post_mention_batches(
+            context, chat_id, msg.GROUP_WELCOME_TAG,
+            _pending_welcome.pop(chat_id, []),
+        )
+        return
+
+    # One pending flush per group. Whoever arrives first sets the timer and
+    # everyone landing inside the window rides along on that same message.
+    name = f"{_WELCOME_JOB_PREFIX}{chat_id}"
+    if context.job_queue.get_jobs_by_name(name):
+        return
+    context.job_queue.run_once(
+        _flush_welcome_tags, when=_WELCOME_TAG_DELAY, chat_id=chat_id, name=name
+    )
+
+
 async def followup_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     """A cycle after being tagged, chase everyone who still hasn't engaged.
 
@@ -597,41 +750,7 @@ async def followup_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             "Follow-up sweep: chasing %d unengaged people in chat %d",
             len(stale), chat_id,
         )
-        button = InlineKeyboardButton(
-            msg.REGISTER_BUTTON, url=_register_url(context.bot.username)
-        )
-
-        # Batch the mentions. Telegram caps a group at roughly 20 messages a
-        # minute, so one message per person would both hit the flood limit and
-        # bury the group. Everyone named still gets a real notification.
-        for start in range(0, len(stale), _FOLLOWUP_BATCH):
-            batch = stale[start:start + _FOLLOWUP_BATCH]
-            mentions = ", ".join(
-                _mention(row["user_id"], row["first_name"]) for row in batch
-            )
-            try:
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=msg.GROUP_FOLLOWUP.format(mentions=mentions),
-                    parse_mode="HTML",
-                    reply_markup=InlineKeyboardMarkup([[button]]),
-                    disable_web_page_preview=True,
-                )
-            except Exception:
-                # Leave their nudged_at alone so the next sweep retries them.
-                logger.exception(
-                    "Follow-up batch failed in chat %d; will retry next sweep",
-                    chat_id,
-                )
-                break
-
-            for row in batch:
-                await db.mark_nudged(
-                    row["user_id"], row["username"], row["first_name"], chat_id
-                )
-            # Space the batches out, but don't idle after the last one.
-            if start + _FOLLOWUP_BATCH < len(stale):
-                await asyncio.sleep(_FOLLOWUP_BATCH_PAUSE)
+        await _post_mention_batches(context, chat_id, msg.GROUP_FOLLOWUP, stale)
 
 
 def _intro_markup() -> InlineKeyboardMarkup:

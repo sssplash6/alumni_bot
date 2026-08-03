@@ -85,6 +85,18 @@ DM_NOT_ACTUALLY_MEMBER = (
     "registering. Tap below. 🎓"
 )
 
+# Posted in the group a moment after someone joins one that already carries the
+# announcement — the only channel that reliably reaches a brand-new member, who
+# has usually never messaged the bot and so cannot be DMed. Reads as a welcome
+# rather than a warning: it's their first minute in the room.
+GROUP_WELCOME_TAG = (
+    "👋 <b>Welcome!</b>\n\n"
+    "{mentions}\n\n"
+    "You're not in the <b>Freshman Alumni group</b> yet — that's the one where "
+    "everything actually happens. Tap below and I'll walk you through it, takes "
+    "about a minute. 🎓"
+)
+
 # The follow-up sweep, a cycle after the announcement: one message per batch of
 # people who still haven't engaged with either button.
 GROUP_FOLLOWUP = (

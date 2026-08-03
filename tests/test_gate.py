@@ -37,6 +37,7 @@ def live(tmp_path):
         ANNOUNCE_INTERVAL_DAYS=5,
         INTRO_MIN_WORDS=50,
         REQUIRE_WATCHED_GROUP=True,
+        WELCOME_TAG=True,
     ):
         asyncio.run(gdb.init_schema())
         # The watched-group list lives in the DB and is cached in memory, so it
@@ -46,14 +47,43 @@ def live(tmp_path):
             yield path
         finally:
             gh._monitored = set()
+            gh._pending_welcome.clear()
 
 
 def _user(uid=555, username="alice", first="Alice", is_bot=False):
     return SimpleNamespace(id=uid, username=username, first_name=first, is_bot=is_bot)
 
 
+class _JobQueue:
+    """Enough of PTB's JobQueue to test coalescing: records run_once, runs on demand.
+
+    ``get_jobs_by_name`` is what stops a second newcomer scheduling a second flush,
+    so it has to answer from the jobs still pending rather than every job ever
+    scheduled — otherwise a flush would never be scheduled again after the first.
+    """
+
+    def __init__(self):
+        self.pending = []
+
+    def run_once(self, callback, when, chat_id=None, name=None):
+        self.pending.append(SimpleNamespace(
+            callback=callback, when=when, chat_id=chat_id, name=name
+        ))
+
+    def get_jobs_by_name(self, name):
+        return [job for job in self.pending if job.name == name]
+
+    def fire(self, ctx):
+        """Run every pending job, as the real queue would when its timer expires."""
+        due, self.pending = self.pending, []
+        for job in due:
+            asyncio.run(job.callback(
+                SimpleNamespace(bot=ctx.bot, job=job, job_queue=self)
+            ))
+
+
 def _ctx(member_status=None, invite="https://t.me/+newlink", watched_status="member",
-         args=None):
+         args=None, job_queue=None):
     """A context whose bot answers get_chat_member / create_chat_invite_link.
 
     The two groups are answered separately, because they ask opposite questions:
@@ -82,7 +112,7 @@ def _ctx(member_status=None, invite="https://t.me/+newlink", watched_status="mem
     bot_obj.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1000))
     bot_obj.pin_chat_message = AsyncMock()
     bot_obj.delete_message = AsyncMock()
-    return SimpleNamespace(bot=bot_obj, args=args)
+    return SimpleNamespace(bot=bot_obj, args=args, job_queue=job_queue)
 
 
 def _group_tap(user=None, chat_id=MONITORED):
@@ -130,9 +160,10 @@ def test_non_member_gets_nudged_once(live):
 
     asyncio.run(gh._process_user(ctx, MONITORED, user))
 
-    # The nudge is a DM to the person, never a post in the group they were
-    # seen in — being tagged publicly for not having joined reads as a
-    # call-out.
+    # The nudge itself is a DM to the person, not a post in the group they were
+    # seen in. A public tag is the join path's decision to add on top (see the
+    # welcome tests), never something the check does on its own — which is what
+    # keeps a first-time poster from being called out mid-conversation.
     kwargs = ctx.bot.send_message.await_args.kwargs
     assert kwargs["chat_id"] == 555
     assert asyncio.run(gdb.get_user(555))["status"] == "nudged"
@@ -1316,6 +1347,170 @@ def test_followup_dormant_when_interval_disabled(live, monkeypatch):
     asyncio.run(gh.followup_job(ctx))
 
     ctx.bot.send_message.assert_not_awaited()
+
+
+# ── Welcoming newcomers: the one channel that always lands ──────────────────────
+# A brand-new member has almost never messaged the bot, so the DM nudge silently
+# fails for them and the pinned announcement only works if they scroll. A public
+# tag on arrival is what closes that gap.
+
+def _announced(chat_id=MONITORED):
+    """Put an announcement on record for a group, as posting one would."""
+    asyncio.run(gdb.set_announcement(chat_id, 500))
+
+
+def _joins(uid=555, chat_id=MONITORED, first="Alice"):
+    """A chat_member update for someone walking into a group."""
+    return SimpleNamespace(chat_member=SimpleNamespace(
+        chat=SimpleNamespace(id=chat_id),
+        old_chat_member=SimpleNamespace(status="left"),
+        new_chat_member=SimpleNamespace(
+            status="member", user=_user(uid=uid, first=first)
+        ),
+    ))
+
+
+def _group_posts(ctx, chat_id=MONITORED):
+    """Every message the bot sent to the group (not the DMs to individuals)."""
+    return [
+        call.kwargs for call in ctx.bot.send_message.await_args_list
+        if call.kwargs.get("chat_id") == chat_id
+    ]
+
+
+def test_a_newcomer_missing_from_alumni_is_tagged_in_the_group(live):
+    _announced()
+    queue = _JobQueue()
+    ctx = _ctx(member_status=None, job_queue=queue)
+
+    asyncio.run(gh.on_chat_member(_joins(), ctx))
+    # Nothing public yet — the tag is coalesced, so it lands on the flush.
+    assert _group_posts(ctx) == []
+    queue.fire(ctx)
+
+    posts = _group_posts(ctx)
+    assert len(posts) == 1
+    assert "Welcome" in posts[0]["text"]
+    assert 'tg://user?id=555' in posts[0]["text"]
+    assert posts[0]["reply_markup"].inline_keyboard[0][0].url.endswith(
+        settings.START_PAYLOAD
+    )
+
+
+def test_a_newcomer_is_left_alone_until_the_group_is_announced_in(live):
+    """No announcement yet means no context for a tag pointing at the bot."""
+    queue = _JobQueue()
+    ctx = _ctx(member_status=None, job_queue=queue)
+
+    asyncio.run(gh.on_chat_member(_joins(), ctx))
+    queue.fire(ctx)
+
+    assert _group_posts(ctx) == []
+    # Still recorded, so the five-day sweep reaches them once it is announced.
+    assert asyncio.run(gdb.get_user(555))["status"] == "nudged"
+
+
+def test_a_newcomer_already_in_alumni_is_not_tagged(live):
+    _announced()
+    queue = _JobQueue()
+    ctx = _ctx(member_status="member", job_queue=queue)
+
+    asyncio.run(gh.on_chat_member(_joins(), ctx))
+    queue.fire(ctx)
+
+    assert _group_posts(ctx) == []
+    assert asyncio.run(gdb.get_user(555))["status"] == "member"
+
+
+def test_newcomers_arriving_together_share_one_message(live):
+    """A bulk add must not fire one message per person into the flood limit."""
+    _announced()
+    queue = _JobQueue()
+    ctx = _ctx(member_status=None, job_queue=queue)
+
+    for uid in (101, 102, 103):
+        asyncio.run(gh.on_chat_member(_joins(uid=uid, first=f"U{uid}"), ctx))
+
+    # One flush scheduled for the group, however many people arrived.
+    assert len(queue.pending) == 1
+    queue.fire(ctx)
+
+    posts = _group_posts(ctx)
+    assert len(posts) == 1
+    for uid in (101, 102, 103):
+        assert f"tg://user?id={uid}" in posts[0]["text"]
+
+
+def test_a_newcomer_who_taps_before_the_flush_is_not_tagged(live):
+    """The delay is long enough for a keen newcomer to already be onboarding.
+
+    Tagging them then would be wrong twice: a public call-out for something they
+    have already done, and a re-stamp to 'nudged' that discards their progress.
+    """
+    _announced()
+    queue = _JobQueue()
+    ctx = _ctx(member_status=None, job_queue=queue)
+    asyncio.run(gh.on_chat_member(_joins(), ctx))
+
+    asyncio.run(gdb.mark_awaiting_form(555, "alice", "Alice"))
+    queue.fire(ctx)
+
+    assert _group_posts(ctx) == []
+    assert asyncio.run(gdb.get_user(555))["status"] == "awaiting_form"
+
+
+def test_tagging_a_newcomer_restarts_their_five_day_clock(live):
+    """The tag is a chase, so the next sweep counts from it rather than the join."""
+    _announced()
+    queue = _JobQueue()
+    ctx = _ctx(member_status=None, job_queue=queue)
+    asyncio.run(gh.on_chat_member(_joins(), ctx))
+    _age_nudge(555, 60)  # as if they had been sitting unengaged for days
+
+    queue.fire(ctx)
+
+    assert len(_group_posts(ctx)) == 1
+    # Freshly stamped, so the sweep leaves them alone for another cycle.
+    ctx.bot.send_message.reset_mock()
+    asyncio.run(gh.followup_job(ctx))
+    assert _group_posts(ctx) == []
+
+
+def test_a_first_time_poster_is_not_tagged(live):
+    """Only joins get a public tag; someone already talking is left to the sweep."""
+    _announced()
+    ctx = _ctx(member_status=None, job_queue=_JobQueue())
+
+    asyncio.run(gh.on_group_message(SimpleNamespace(
+        effective_chat=SimpleNamespace(id=MONITORED, type="supergroup"),
+        effective_user=_user(),
+    ), ctx))
+
+    assert _group_posts(ctx) == []
+    assert asyncio.run(gdb.get_user(555))["status"] == "nudged"
+
+
+def test_welcome_tag_can_be_switched_off(live, monkeypatch):
+    _announced()
+    monkeypatch.setattr(settings, "WELCOME_TAG", False)
+    queue = _JobQueue()
+    ctx = _ctx(member_status=None, job_queue=queue)
+
+    asyncio.run(gh.on_chat_member(_joins(), ctx))
+    queue.fire(ctx)
+
+    assert _group_posts(ctx) == []
+    assert asyncio.run(gdb.get_user(555))["status"] == "nudged"
+
+
+def test_welcome_falls_back_to_posting_now_without_a_job_queue(live):
+    """The gate warns rather than dies when python-telegram-bot[job-queue] is absent."""
+    _announced()
+    ctx = _ctx(member_status=None, job_queue=None)
+
+    asyncio.run(gh.on_chat_member(_joins(), ctx))
+
+    assert len(_group_posts(ctx)) == 1
 
 
 # ── Watching groups is managed live, not via config ─────────────────────────────

@@ -233,6 +233,10 @@ services:
       #                              matches on a self-reported username, so
       #                              leave blank unless you have that backlog
       #   GATE_AUTO_WATCH            default true (false = /gate_watch only)
+      #   GATE_WELCOME_TAG           default true — tag a newcomer in the group
+      #                              they joined, once it has the announcement.
+      #                              The only channel that reaches someone who
+      #                              has never messaged the bot (false = DM-only)
       #   GATE_REQUIRE_WATCHED_GROUP default true — only people already in a
       #                              watched group may onboard. Leave it on: the
       #                              bot's username is public, so with it off

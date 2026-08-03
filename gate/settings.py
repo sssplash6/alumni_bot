@@ -84,6 +84,18 @@ ANNOUNCE_INTERVAL_DAYS: int = int(
     os.environ.get("GATE_ANNOUNCE_INTERVAL_DAYS", "5") or "5"
 )
 
+# Tag a newcomer in the group they joined, once the announcement is up there.
+#
+# The pinned announcement only works on people who scroll past it, and the DM
+# nudge only reaches people who have messaged the bot before — which a brand-new
+# member almost never has. A public mention is the one channel that always lands,
+# so joining a group with the announcement already posted is answered there.
+#
+# Only fires for people actually missing from the alumni group, and only on a
+# JOIN: someone already posting in the group is left to the 5-day sweep rather
+# than tagged mid-conversation. Set false to go back to DM-only.
+WELCOME_TAG: bool = _flag(os.environ.get("GATE_WELCOME_TAG", "true"))
+
 # How long after someone joins the alumni group to check whether they actually
 # posted their intro, in hours. 0 disables the check.
 #
