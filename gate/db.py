@@ -683,6 +683,14 @@ async def stats() -> dict[str, int]:
 
     ``total`` counts rows directly rather than summing the buckets, so a status
     that isn't displayed can never quietly shrink it.
+
+    An invite code is not a way round the flow — it only excuses someone from the
+    approved-group check, and they still do the form and the intro — so everyone
+    admitted by one is already inside ``registered_ever``. ``token_registered``
+    breaks that subset out, and ``tokens_redeemed`` counts the people who spent a
+    code at all: the gap between the two is codes handed to someone who started
+    and never finished, which nothing else reports. Both count people rather than
+    rows, since one person redeeming twice is still one person.
     """
     async with aiosqlite.connect(DB_PATH) as db:
         result = {s: 0 for s in VALID_STATUSES}
@@ -697,6 +705,19 @@ async def stats() -> dict[str, int]:
         total, registered_ever = await cur.fetchone()
         result["total"] = total
         result["registered_ever"] = registered_ever
+        cur = await db.execute(
+            """
+            SELECT COUNT(DISTINCT t.redeemed_by),
+                   COUNT(DISTINCT CASE WHEN u.registered_at IS NOT NULL
+                                       THEN t.redeemed_by END)
+              FROM gate_invite_tokens t
+              LEFT JOIN gate_users u ON u.user_id = t.redeemed_by
+             WHERE t.redeemed_by IS NOT NULL
+            """
+        )
+        tokens_redeemed, token_registered = await cur.fetchone()
+        result["tokens_redeemed"] = tokens_redeemed
+        result["token_registered"] = token_registered
         return result
 
 

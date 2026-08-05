@@ -2296,4 +2296,59 @@ def test_every_status_is_shown_and_the_buckets_add_up_to_the_total(live):
     for status in gdb.VALID_STATUSES:
         assert "{" + status + "}" in gmsg.STATS, f"{status} has no line in the message"
     rendered = gmsg.STATS.format(**stats)  # and every placeholder is supplied
-    assert "Registered through the bot: <b>1</b>" in rendered
+    assert "Completed the bot's flow: <b>1</b>" in rendered
+
+
+def test_someone_admitted_by_an_invite_code_counts_as_registered(live):
+    """A code skips the group check, not the flow, so they are a real registration."""
+    token_id = asyncio.run(gdb.create_invite_token("hash-a", "guest", ADMIN, None))
+    assert asyncio.run(gdb.redeem_invite_token(token_id, 555))
+    asyncio.run(gdb.mark_exempt(555))
+    asyncio.run(gdb.mark_registered(555, "alice", "Alice", "Ada", "https://t.me/+a"))
+
+    stats = asyncio.run(gdb.stats())
+    assert stats["registered_ever"] == 1   # counted once, in the main figure
+    assert stats["token_registered"] == 1  # and attributed to the code
+    assert stats["tokens_redeemed"] == 1
+
+
+def test_a_code_redeemed_but_never_finished_is_not_a_registration(live):
+    """The gap between the two numbers is the whole point of showing both."""
+    token_id = asyncio.run(gdb.create_invite_token("hash-b", "guest", ADMIN, None))
+    asyncio.run(gdb.redeem_invite_token(token_id, 555))
+    asyncio.run(gdb.mark_exempt(555))  # got in the door, then wandered off
+
+    stats = asyncio.run(gdb.stats())
+    assert stats["tokens_redeemed"] == 1
+    assert stats["token_registered"] == 0
+    assert stats["registered_ever"] == 0
+
+
+def test_unredeemed_and_revoked_codes_count_for_nobody(live):
+    asyncio.run(gdb.create_invite_token("hash-c", "unused", ADMIN, None))
+    revoked = asyncio.run(gdb.create_invite_token("hash-d", "killed", ADMIN, None))
+    asyncio.run(gdb.revoke_invite_token(revoked))
+
+    assert asyncio.run(gdb.stats())["tokens_redeemed"] == 0
+
+
+def test_one_person_redeeming_twice_is_still_one_person(live):
+    """Counted per person, not per row, or the codes outnumber the humans."""
+    first = asyncio.run(gdb.create_invite_token("hash-e", "one", ADMIN, None))
+    second = asyncio.run(gdb.create_invite_token("hash-f", "two", ADMIN, None))
+    asyncio.run(gdb.redeem_invite_token(first, 555))
+    asyncio.run(gdb.redeem_invite_token(second, 555))
+    asyncio.run(gdb.mark_registered(555, "alice", "Alice", "Ada", "https://t.me/+a"))
+
+    stats = asyncio.run(gdb.stats())
+    assert stats["tokens_redeemed"] == 1
+    assert stats["token_registered"] == 1
+
+
+def test_registering_without_a_code_is_not_attributed_to_one(live):
+    asyncio.run(gdb.mark_registered(555, "alice", "Alice", "Ada", "https://t.me/+a"))
+
+    stats = asyncio.run(gdb.stats())
+    assert stats["registered_ever"] == 1
+    assert stats["token_registered"] == 0
+    assert stats["tokens_redeemed"] == 0

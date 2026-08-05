@@ -365,9 +365,14 @@ STATS = (
     "Invited — link not used yet: <b>{registered}</b>\n"
     "— — —\n"
     "Total people seen: <b>{total}</b>\n"
-    "Registered through the bot: <b>{registered_ever}</b>\n\n"
-    "<i>That last one is a lifetime count, so most of them are also in "
-    "\"already members\" — joining the group moves people there.</i>"
+    "Completed the bot's flow: <b>{registered_ever}</b>\n"
+    "— of those, using an invite code: <b>{token_registered}</b>\n"
+    "Invite codes redeemed: <b>{tokens_redeemed}</b>\n\n"
+    "<i>The bottom three are lifetime counts, so most of those people also "
+    "appear in \"already members\" — joining the group moves them there. A code "
+    "is not a shortcut past the form and intro, only past the approved-group "
+    "check, so anyone admitted by one is already inside the flow figure; a "
+    "redeemed code missing from it is someone who started and stopped.</i>"
 )
 
 LIST_EMPTY = "No alumni registrations through the gate yet."
