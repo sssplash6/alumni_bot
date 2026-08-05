@@ -352,9 +352,9 @@ REVOKE_NOTHING = (
 # ── Admin ───────────────────────────────────────────────────────────────────────
 # The block above the line is a snapshot: one line per status, so it partitions
 # "total" and every status must appear or the lines silently stop adding up.
-# "Registered through the bot" sits below it because it is a different kind of
-# number — a lifetime count that deliberately overlaps "Already members", and
-# the one people actually mean when they ask how the gate is doing.
+# The two lines below it are a different kind of number — lifetime counts that
+# deliberately overlap "Already members", and the ones people actually mean when
+# they ask how the gate is doing.
 STATS = (
     "📊 <b>Alumni Gate stats</b>\n\n"
     "Already members: <b>{member}</b>\n"
@@ -366,13 +366,7 @@ STATS = (
     "— — —\n"
     "Total people seen: <b>{total}</b>\n"
     "Completed the bot's flow: <b>{registered_ever}</b>\n"
-    "— of those, using an invite code: <b>{token_registered}</b>\n"
-    "Invite codes redeemed: <b>{tokens_redeemed}</b>\n\n"
-    "<i>The bottom three are lifetime counts, so most of those people also "
-    "appear in \"already members\" — joining the group moves them there. A code "
-    "is not a shortcut past the form and intro, only past the approved-group "
-    "check, so anyone admitted by one is already inside the flow figure; a "
-    "redeemed code missing from it is someone who started and stopped.</i>"
+    "— of those, using an invite code: <b>{token_registered}</b>"
 )
 
 LIST_EMPTY = "No alumni registrations through the gate yet."
