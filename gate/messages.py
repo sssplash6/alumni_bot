@@ -350,15 +350,24 @@ REVOKE_NOTHING = (
 
 
 # ── Admin ───────────────────────────────────────────────────────────────────────
+# The block above the line is a snapshot: one line per status, so it partitions
+# "total" and every status must appear or the lines silently stop adding up.
+# "Registered through the bot" sits below it because it is a different kind of
+# number — a lifetime count that deliberately overlaps "Already members", and
+# the one people actually mean when they ask how the gate is doing.
 STATS = (
     "📊 <b>Alumni Gate stats</b>\n\n"
     "Already members: <b>{member}</b>\n"
     "Nudged (not started): <b>{nudged}</b>\n"
     "Onboarding — form pending: <b>{awaiting_form}</b>\n"
+    "Onboarding — name pending: <b>{awaiting_name}</b>\n"
     "Onboarding — intro pending: <b>{awaiting_intro}</b>\n"
-    "Registered via bot: <b>{registered}</b>\n"
+    "Invited — link not used yet: <b>{registered}</b>\n"
     "— — —\n"
-    "Total people seen: <b>{total}</b>"
+    "Total people seen: <b>{total}</b>\n"
+    "Registered through the bot: <b>{registered_ever}</b>\n\n"
+    "<i>That last one is a lifetime count, so most of them are also in "
+    "\"already members\" — joining the group moves people there.</i>"
 )
 
 LIST_EMPTY = "No alumni registrations through the gate yet."

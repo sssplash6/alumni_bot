@@ -616,11 +616,18 @@ async def stale_nudged_users(cutoff_iso: str, chat_id: int) -> list[dict]:
 
 
 async def registered_users() -> list[dict]:
-    """The roster of everyone admitted through the gate."""
+    """The roster of everyone ever admitted through the gate.
+
+    Keyed off ``registered_at`` rather than ``status = 'registered'``: that
+    status is lost as soon as they join the alumni group and become 'member',
+    which would drop from the roster exactly the people who completed the
+    journey. See stats() for the same distinction.
+    """
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
-            "SELECT * FROM gate_users WHERE status = 'registered' ORDER BY registered_at"
+            "SELECT * FROM gate_users "
+            "WHERE registered_at IS NOT NULL ORDER BY registered_at"
         )
         return [dict(row) for row in await cur.fetchall()]
 
@@ -660,7 +667,23 @@ async def set_announcement(chat_id: int, message_id: int) -> None:
 
 
 async def stats() -> dict[str, int]:
-    """Counts per status plus a total, for the admin command."""
+    """Counts per status plus totals, for the admin command.
+
+    ``status`` holds one value at a time, so the per-status counts say where
+    people are *right now*, not what they have done. In particular 'registered'
+    is not "registered through the bot": someone handed their invite link is
+    flipped to 'member' the moment they walk into the alumni group, and their
+    registration is absorbed into that bucket. The 'registered' count is
+    therefore only the people mid-flight — given a link, not yet through the
+    door — and reads zero whenever everyone has used theirs.
+
+    ``registered_ever`` is the lifetime figure. ``registered_at`` is COALESCEd on
+    every write and left alone by mark_joined_group, so it outlives the status
+    flip and is the honest answer to "how many people did the bot register?".
+
+    ``total`` counts rows directly rather than summing the buckets, so a status
+    that isn't displayed can never quietly shrink it.
+    """
     async with aiosqlite.connect(DB_PATH) as db:
         result = {s: 0 for s in VALID_STATUSES}
         cur = await db.execute(
@@ -668,7 +691,12 @@ async def stats() -> dict[str, int]:
         )
         for row in await cur.fetchall():
             result[row[0]] = row[1]
-        result["total"] = sum(result[s] for s in VALID_STATUSES)
+        cur = await db.execute(
+            "SELECT COUNT(*), COUNT(registered_at) FROM gate_users"
+        )
+        total, registered_ever = await cur.fetchone()
+        result["total"] = total
+        result["registered_ever"] = registered_ever
         return result
 
 

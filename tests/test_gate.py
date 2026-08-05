@@ -2234,3 +2234,66 @@ def test_a_name_typed_by_someone_awaiting_an_intro_is_not_a_name_lookup(live):
         asyncio.run(gh.on_private_text(update, _ctx()))
 
     lookup.assert_not_awaited()
+
+
+# ── Stats and the roster ────────────────────────────────────────────────────────
+# Both used to key off status = 'registered', which a successful registration
+# destroys: joining the alumni group flips the row to 'member'. The counter
+# therefore read zero precisely when the gate was working, and the roster lost
+# everyone who completed the journey.
+
+def test_registering_then_joining_still_counts_as_registered(live):
+    """The status flip to 'member' must not erase the registration."""
+    asyncio.run(gdb.mark_registered(555, "alice", "Alice", "Ada", "https://t.me/+a"))
+    asyncio.run(gdb.mark_joined_group(555, "alice", "Alice"))
+
+    stats = asyncio.run(gdb.stats())
+    assert stats["registered_ever"] == 1
+    assert stats["member"] == 1      # they are counted as a member, and
+    assert stats["registered"] == 0  # no longer waiting to use their link
+
+
+def test_the_registered_bucket_means_link_not_used_yet(live):
+    """It's a mid-flight count, not a lifetime one — the two must not be conflated."""
+    asyncio.run(gdb.mark_registered(1, "ann", "Ann", "Ann A", "https://t.me/+a"))
+    asyncio.run(gdb.mark_joined_group(1, "ann", "Ann"))
+    asyncio.run(gdb.mark_registered(2, "bob", "Bob", "Bob B", "https://t.me/+b"))
+
+    stats = asyncio.run(gdb.stats())
+    assert stats["registered"] == 1       # only Bob still holds an unused link
+    assert stats["registered_ever"] == 2  # but both went through the bot
+
+
+def test_the_roster_keeps_people_who_made_it_into_the_group(live):
+    asyncio.run(gdb.mark_registered(1, "ann", "Ann", "Ann A", "https://t.me/+a"))
+    asyncio.run(gdb.mark_joined_group(1, "ann", "Ann"))
+    asyncio.run(gdb.mark_registered(2, "bob", "Bob", "Bob B", "https://t.me/+b"))
+
+    roster = asyncio.run(gdb.registered_users())
+    assert [r["full_name"] for r in roster] == ["Ann A", "Bob B"]
+
+
+def test_the_roster_excludes_people_who_never_registered(live):
+    """A member the bot merely discovered was never admitted through the gate."""
+    asyncio.run(gdb.mark_member(3, "cid", "Cid"))
+    asyncio.run(gdb.mark_nudged(4, "dee", "Dee", MONITORED))
+
+    assert asyncio.run(gdb.registered_users()) == []
+    assert asyncio.run(gdb.stats())["registered_ever"] == 0
+
+
+def test_every_status_is_shown_and_the_buckets_add_up_to_the_total(live):
+    """A status missing from the message would silently break the arithmetic."""
+    asyncio.run(gdb.mark_member(1, "ann", "Ann"))
+    asyncio.run(gdb.mark_nudged(2, "bob", "Bob", MONITORED))
+    asyncio.run(gdb.mark_awaiting_form(3, "cid", "Cid"))
+    asyncio.run(gdb.mark_awaiting_name(4, "dee", "Dee"))
+    asyncio.run(gdb.mark_awaiting_intro(5, "eve", "Eve", "Eve E"))
+    asyncio.run(gdb.mark_registered(6, "fay", "Fay", "Fay F", "https://t.me/+f"))
+
+    stats = asyncio.run(gdb.stats())
+    assert sum(stats[s] for s in gdb.VALID_STATUSES) == stats["total"] == 6
+    for status in gdb.VALID_STATUSES:
+        assert "{" + status + "}" in gmsg.STATS, f"{status} has no line in the message"
+    rendered = gmsg.STATS.format(**stats)  # and every placeholder is supplied
+    assert "Registered through the bot: <b>1</b>" in rendered
