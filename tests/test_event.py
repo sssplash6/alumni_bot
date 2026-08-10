@@ -149,7 +149,7 @@ def test_in_group_but_not_channel_gets_a_channel_link(live):
     row = asyncio.run(edb.get_user(555))
     assert row["status"] == "awaiting_join"
     assert row["missing"] == "channel"
-    assert "channel" in reply.await_args.args[0]
+    assert "channel" in reply.await_args.args[0].lower()
 
 
 def test_in_channel_but_not_group_gets_a_group_link(live):

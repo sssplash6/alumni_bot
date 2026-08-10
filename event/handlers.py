@@ -208,11 +208,14 @@ async def _send_join_link(context, user, reply, what: str) -> int:
         return ConversationHandler.END
 
     await db.mark_awaiting_join(user.id, user.username, user.first_name, what)
+    # The copy reads "the Alumni {what}", so the kind is capitalised there and
+    # only there — the stored value stays lowercase, since it's a key.
+    label = what.capitalize()
     await reply(
-        msg.JOIN_THE_OTHER.format(what=what),
+        msg.JOIN_THE_OTHER.format(what=label),
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton(msg.JOIN_BUTTON.format(what=what), url=link)
+            InlineKeyboardButton(msg.JOIN_BUTTON.format(what=label), url=link)
         ]]),
         disable_web_page_preview=True,
     )

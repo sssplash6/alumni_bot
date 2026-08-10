@@ -25,22 +25,23 @@ NOT_CONFIGURED = (
 # the point of the event being alumni-only.
 NOT_ALUMNI = (
     "🔒 <b>This event is for Freshman Academy alumni only.</b>\n\n"
-    "I can't find you in the alumni group or the alumni channel, so I can't "
+    "I can't find you in the Alumni Group or the Alumni Channel, so I can't "
     "register you.\n\n"
     "If you <b>are</b> an alum, you may be messaging me from a different "
     "Telegram account than the one you use there — try again from that account. "
     f"Otherwise, message {ADMIN_CONTACT}. 💬"
 )
 
-# In exactly one of the two. {what} is "group" or "channel".
+# In exactly one of the two. {what} is "Group" or "Channel" — capitalised by the
+# handler, because here it's the tail of a proper noun: the Alumni Group.
 JOIN_THE_OTHER = (
     "You're almost there! 🎓\n\n"
-    "Registration needs you in <b>both</b> the alumni group and the alumni "
-    "channel — right now I can only see you in one of them.\n\n"
-    "Here's your personal one-time link to the {what} you're missing. Tap it to "
-    "join, and I'll message you the moment you're in:"
+    "Registration needs you in <b>both</b> the Alumni Group and the Alumni "
+    "Channel — right now I can only see you in one of them.\n\n"
+    "Here's your personal one-time link to the Alumni {what} you're missing. Tap "
+    "it to join, and I'll message you the moment you're in:"
 )
-JOIN_BUTTON = "Join the alumni {what} ▸"
+JOIN_BUTTON = "Join the Alumni {what} ▸"
 
 # They joined the missing chat and are now eligible. Ends on the button rather
 # than a question, because the button is what actually continues the flow —

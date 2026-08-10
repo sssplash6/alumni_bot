@@ -6,10 +6,10 @@ from config import ADMIN_CONTACT
 MENU_BUTTON = "🎓 Join the Alumni Group"
 
 # Shown while the master switch is off.
-COMING_SOON = "🎓 The Alumni group is coming soon — stay tuned! ✨"
+COMING_SOON = "🎓 The Alumni Group is coming soon — stay tuned! ✨"
 
 NOT_CONFIGURED = (
-    "⚙️ The Alumni group hasn't been configured yet. Please try again a little "
+    "⚙️ The Alumni Group hasn't been configured yet. Please try again a little "
     f"later, or contact {ADMIN_CONTACT}."
 )
 
@@ -19,7 +19,7 @@ NOT_CONFIGURED = (
 # than asking them to check.
 NOT_IN_ANY_GROUP = (
     "🤔 I can't find you in any of the Freshman community groups.\n\n"
-    "The Alumni group is for people who are already part of one of them, so I "
+    "The Alumni Group is for people who are already part of one of them, so I "
     "can't start you off just yet.\n\n"
     "If you <b>are</b> in one, you may be messaging me from a different Telegram "
     "account than the one you use there — try again from that account.\n\n"
@@ -36,51 +36,51 @@ ELIGIBILITY_UNAVAILABLE = (
 )
 
 # ── The nudge, sent as a DM ─────────────────────────────────────────────────────
-# Seen in a community group but not in the Alumni group. Sent privately, never in
+# Seen in a community group but not in the Alumni Group. Sent privately, never in
 # the group: being publicly tagged for not having joined something reads as being
 # called out. It only lands if they've started the bot before — everyone else is
 # reached by the pinned announcement and the follow-up roundup.
 DM_NUDGE = (
-    "👋 Hey! Looks like you're not in the official <b>Alumni group</b> yet.\n\n"
+    "👋 Hey! Looks like you're not in the official <b>Alumni Group</b> yet.\n\n"
     "Tap below to register. You'll get a personal one-time link and be let in "
     "automatically. 🎓"
 )
-REGISTER_BUTTON = "Register for the Alumni group ▸"
+REGISTER_BUTTON = "Register for the Alumni Group ▸"
 
 # ── Group announcement (pinned, re-posted every few days) ────────────────────────
 # The cold-start path: everyone already in the group taps one button. Every reply
 # to a tap is private — this and the follow-up roundup are the only two things the
 # gate ever posts in a group.
 GROUP_ANNOUNCE = (
-    "🎓 <b>The official Alumni group</b>\n\n"
+    "🎓 <b>The official Alumni Group</b>\n\n"
     "Every Freshman Academy graduate belongs in it — that's where introductions, "
     "opportunities and announcements land.\n\n"
     "<b>Not in it yet?</b> Tap <b>Join</b> and I'll walk you through it.\n"
     "<b>Already in?</b> Tap the second button and I'll stop asking.\n\n"
     "<i>Either way it's one tap, and nobody else sees your answer.</i>"
 )
-GROUP_ANNOUNCE_JOIN_BUTTON = "🎓 Join the Alumni group"
+GROUP_ANNOUNCE_JOIN_BUTTON = "🎓 Join the Alumni Group"
 GROUP_ANNOUNCE_ALREADY_BUTTON = "✅ I'm already in it"
 
 # Callback answers — a private popup only the person who tapped can see, so the
 # group never learns who tapped what.
-CB_ALREADY_MEMBER = "✅ Confirmed — you're in the Alumni group. I won't ask you again."
+CB_ALREADY_MEMBER = "✅ Confirmed — you're in the Alumni Group. I won't ask you again."
 CB_NOT_CONFIGURED = (
-    f"⚙️ The Alumni group isn't set up yet. Try again later or contact {ADMIN_CONTACT}."
+    f"⚙️ The Alumni Group isn't set up yet. Try again later or contact {ADMIN_CONTACT}."
 )
 
 # They said they're already in, but the membership check disagrees. Said gently:
 # the likeliest explanations are a second Telegram account or having left.
 CB_NOT_ACTUALLY_MEMBER = (
-    "Hmm — I can't find this account in the Alumni group. "
-    "Tap “Join the Alumni group” above and I'll sort you out."
+    "Hmm — I can't find this account in the Alumni Group. "
+    "Tap “Join the Alumni Group” above and I'll sort you out."
 )
 
 # DMed when someone claims membership they don't have. The popup above says the
 # same thing but vanishes when they tap it away; this stays in their chat with the
 # bot, with the button attached. The group is never told about the claim.
 DM_NOT_ACTUALLY_MEMBER = (
-    "🤔 I checked, and this account <b>isn't in the Alumni group</b> yet!\n\n"
+    "🤔 I checked, and this account <b>isn't in the Alumni Group</b> yet!\n\n"
     "If you're in it on another Telegram account, no problem — but this one needs "
     "registering. Tap below. 🎓"
 )
@@ -92,7 +92,7 @@ DM_NOT_ACTUALLY_MEMBER = (
 GROUP_WELCOME_TAG = (
     "👋 <b>Welcome!</b>\n\n"
     "{mentions}\n\n"
-    "You're not in the <b>Freshman Alumni group</b> yet — that's the one where "
+    "You're not in the <b>Freshman Alumni Group</b> yet — that's the one where "
     "everything actually happens. Tap below and I'll walk you through it, takes "
     "about a minute. 🎓"
 )
@@ -100,7 +100,7 @@ GROUP_WELCOME_TAG = (
 # The follow-up sweep, a cycle after the announcement: one message per batch of
 # people who still haven't engaged with either button.
 GROUP_FOLLOWUP = (
-    "⏰ <b>Still missing from the Alumni group</b>\n\n"
+    "⏰ <b>Still missing from the Alumni Group</b>\n\n"
     "{mentions}\n\n"
     "You haven't joined yet — it takes about a minute. Tap below and I'll walk you "
     "through it. 🎓"
@@ -177,7 +177,7 @@ ASK_INTRO = (
     "studying, your impressions, your goals for the year ahead, and anything else "
     "worth sharing.\n\n"
     "As soon as you send it I'll hand you your personal invite link. You'll re-post "
-    "this same intro in the Alumni group so everyone can meet you. 🎓"
+    "this same intro in the Alumni Group so everyone can meet you. 🎓"
 )
 
 # They sent something that isn't text (voice note, photo, sticker, forward…)
@@ -200,7 +200,7 @@ INTRO_TOO_SHORT = (
 # Intro received → hand over the one-time invite link.
 ADMITTED = (
     "🎉 <b>You're all set, {name}!</b>\n\n"
-    "Tap below to join the Alumni group — this link is one-time and just for you, "
+    "Tap below to join the Alumni Group — this link is one-time and just for you, "
     "and you'll be admitted automatically.\n\n"
     "Once you're in, <b>post your intro</b> in the group so everyone can welcome "
     "you. 👋"
@@ -212,14 +212,15 @@ ADMITTED = (
 # a channel they can't even write in.
 ADMITTED_WITH_CHANNEL = (
     "🎉 <b>You're all set, {name}!</b>\n\n"
-    "Two taps below, and both links are one-time and just for you:\n\n"
-    "🎓 <b>The Alumni group</b> — the conversation. Once you're in, "
+    "Two taps below, and both links are one-time and just for you — "
+    "<b>make sure to join both</b>:\n\n"
+    "🎓 <b>The Alumni Group</b> — the conversation. Once you're in, "
     "<b>post your intro there</b> so everyone can welcome you. 👋\n"
-    "📣 <b>The channel</b> — announcements, opportunities and updates. Worth "
-    "joining now so you don't miss anything."
+    "📣 <b>The Alumni Channel</b> — announcements, opportunities and updates. "
+    "Worth joining now so you don't miss anything."
 )
-JOIN_BUTTON = "Join the Alumni group ▸"
-JOIN_CHANNEL_BUTTON = "Join the channel 📣"
+JOIN_BUTTON = "Join the Alumni Group ▸"
+JOIN_CHANNEL_BUTTON = "Join the Alumni Channel 📣"
 
 # They already finished onboarding and have a link — re-hand it, don't re-mint.
 # Deliberately vague about how many links: the same string is used whether or not
@@ -229,7 +230,7 @@ ALREADY_REGISTERED = (
     "below to join."
 )
 
-ALREADY_MEMBER = "✅ You're already in the Alumni group — you're all set! 🎉"
+ALREADY_MEMBER = "✅ You're already in the Alumni Group — you're all set! 🎉"
 
 # Asked a few hours after they join. One question per person, ever — they're
 # already in, so there's nothing to enforce with and nothing worth souring a
@@ -382,7 +383,7 @@ ANNOUNCE_NO_TARGETS = (
 WATCH_ADDED = (
     "👀 Now watching <b>{title}</b>\n"
     "<code>{chat_id}</code>\n\n"
-    "I'll check people here against the Alumni group. Run "
+    "I'll check people here against the Alumni Group. Run "
     "<code>/gate_announce</code> to post the join message."
 )
 AUTO_WATCHED = (
@@ -393,7 +394,7 @@ AUTO_WATCHED = (
     "own doesn't tell me these are our people.\n\n"
     "If it's a real Freshman group, run <code>/gate_announce</code> <b>inside it</b>. "
     "That posts the join message and approves it, so being a member there counts "
-    "towards joining the Alumni group.\n\n"
+    "towards joining the Alumni Group.\n\n"
     "If you don't recognise it, do nothing — or <code>/gate_unwatch</code> there to "
     "forget it entirely."
 )
@@ -404,14 +405,14 @@ AUTO_WATCHED = (
 ANNOUNCE_APPROVED = (
     "✅ <b>{title}</b> is now approved.\n\n"
     "The announcement is posted and pinned, and being a member here now counts "
-    "towards joining the Alumni group. Undo with <code>/gate_unwatch</code> in "
+    "towards joining the Alumni Group. Undo with <code>/gate_unwatch</code> in "
     "that group."
 )
 
 WATCH_ALREADY = "👀 Already watching <b>{title}</b> — nothing to change."
 WATCH_NOT_A_GROUP = "This only works inside a group. Run it in the group you want watched."
 WATCH_IS_ALUMNI_GROUP = (
-    "🚫 This is the Alumni group itself — the destination, not a group to watch. "
+    "🚫 This is the Alumni Group itself — the destination, not a group to watch. "
     "Watching it would nudge people about a group they're already in."
 )
 UNWATCH_DONE = "🚫 Stopped watching <b>{title}</b>. Existing records are kept."

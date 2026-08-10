@@ -207,7 +207,7 @@ def build():
         "If you're not a dep lead, do steps 1 and 2 and ask yours to run the "
         "command in the group — it takes them a second.",
         "Switching a group on is what makes being a member of it count towards "
-        "joining the Alumni group, so it's kept to dep leads. For anyone else "
+        "joining the Alumni Group, so it's kept to dep leads. For anyone else "
         "<b>/gate_announce</b> stays silent rather than refusing.",
     ], style=lead))
 
@@ -274,7 +274,7 @@ def build():
         "What a member goes through",
         Paragraph(
             "So you can answer “what is this bot?” without asking us: they tap "
-            "<b>Join the Alumni group</b>, which opens the bot in a private chat. "
+            "<b>Join the Alumni Group</b>, which opens the bot in a private chat. "
             "There it asks them to fill in a short form, read the values doc, and "
             "send a 50–100 word intro. Once all three are done it hands them a "
             "personal one-time invite link and they're admitted automatically. "
@@ -300,7 +300,7 @@ def build():
              "announcement still works unpinned."),
             ("“But I <i>am</i> in the group!”",
              "Almost always a second Telegram account. Ask which account they use "
-             "in the alumni group, and have them open the bot from that one."),
+             "in the Alumni Group, and have them open the bot from that one."),
             ("“The bot won't reply to me”",
              "They need to tap <b>Start</b> in the private chat once. Telegram won't "
              "let a bot message anyone who hasn't."),
